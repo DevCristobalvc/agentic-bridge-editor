@@ -94,8 +94,11 @@ Probado en Windows 11. Antigravity y Git for Windows son opcionales.
 git clone https://github.com/DevCristobalvc/agentic-bridge-editor.git
 cd agentic-bridge-editor
 npm install
-npm start            # o doble clic en "Iniciar Agentic Bridge.cmd"
+npm link             # una vez: instala el comando abe-on
+abe-on               # desde cualquier terminal: levanta el hub y abre el editor
 ```
+
+`abe-on` funciona en Git Bash, PowerShell y CMD. Si el hub ya está corriendo, solo abre el editor; si no, lo arranca en segundo plano (sin ventana, con el registro en `~/.agentic-bridge/hub.log`) y espera a que responda. Con `abe-on --no-open` no abre el navegador. También puedes usar `npm start` o hacer doble clic en `Iniciar Agentic Bridge.cmd`.
 
 Se abre `http://127.0.0.1:4004`. En el inicio aparece **Conectar ahora**; también puedes ejecutar `npm run connect`. Para cada cuenta encontrada en tu carpeta de usuario (`~/.claude*`) y para Antigravity:
 

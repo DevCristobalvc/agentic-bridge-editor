@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "Agentic Bridge — el editor web4: todas tus sesiones de Claude Code y Antigravity, de todas tus cuentas, en un solo puente local con salas de agentes, terminales, archivos, proyectos con contrato y métricas.",
   "main": "server/index.js",
+  "bin": {
+    "abe-on": "bin/abe-on.js"
+  },
   "scripts": {
     "start": "node server/index.js --open",
     "serve": "node server/index.js",
