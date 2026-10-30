@@ -24,6 +24,7 @@ Web1 te dejó **leer**. Web2, **escribir**. Web3, **poseer**. Web4 es **delegar*
 | **Archivos** | Árbol de carpetas, vista de carpeta en cuadrícula o lista, visor con resaltado de sintaxis, markdown renderizado, imágenes, PDF y edición ligera (`Ctrl+S`). Comparte cualquier archivo en una sala. |
 | **Proyectos** | Asistente de 3 pasos (proyecto, equipo y contrato) que crea la carpeta, `CONTRATO.md`, `.bridge/contract.json`, `todo.md`, los subagentes en `.claude/agents/` y la sala del equipo. El tablero kanban se lee en vivo desde `todo.md`. |
 | **Equipo** | Biblioteca de roles editable: instrucciones, modelo, permisos y herramientas permitidas. Despliega cualquier rol como sesión o agente de sala. |
+| **Baúl** | Memoria compartida: notas, fragmentos e imágenes con etiquetas, que guardas tú o cualquier sesión de cualquier cuenta (`bridge_vault_save`) y que todas pueden buscar (`bridge_vault_search`). |
 | **Métricas** | Uso de la ventana de 5 horas y de la semana por suscripción, con hora de reinicio; costo y tokens por sesión; tabla completa ordenable. |
 
 ## Cómo se hablan las sesiones
@@ -49,7 +50,7 @@ flowchart LR
   T -- "escribe en la sesión cuando está libre" --> S1
 ```
 
-- **MCP `agentic-bridge`**: cada sesión, de cualquier cuenta, obtiene las herramientas `bridge_whoami`, `bridge_sessions`, `bridge_rooms`, `bridge_read`, `bridge_send` y `bridge_join`.
+- **MCP `agentic-bridge`**: cada sesión, de cualquier cuenta, obtiene las herramientas `bridge_whoami`, `bridge_sessions`, `bridge_rooms`, `bridge_read`, `bridge_send`, `bridge_join`, `bridge_vault_save` y `bridge_vault_search`. La sesión se identifica sola (por `CLAUDE_CODE_SESSION_ID` o por su proceso).
 - **Hooks de buzón**: `UserPromptSubmit` entrega los mensajes pendientes como contexto. Con `Stop`, si llegó algo mientras la sesión trabajaba, se le pide responder antes de detenerse (una sola vez).
 - **Agentes de sala**: cada agente es una sesión de Claude con memoria propia que Bridge conduce turno a turno (`claude -p --output-format stream-json --resume`). Se activan con `@menciones`, con un tope de turnos automáticos y de presupuesto.
 - **Cockpit**: el statusline (en `integrations/cockpit/`) publica su estado en `~/.claude/crew/` y muestra `📨 N` cuando hay mensajes de Bridge.

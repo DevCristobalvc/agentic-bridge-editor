@@ -125,6 +125,24 @@ const TOOLS = [
     description: 'Te une a una sala para recibir sus mensajes en tu buzón.',
     inputSchema: { type: 'object', properties: { room: { type: 'string' } }, required: ['room'] },
   },
+  {
+    name: 'bridge_vault_save',
+    description: 'Guarda una nota en el Baúl de Agentic Bridge, la memoria compartida por el humano y todas las sesiones de todas las cuentas: decisiones, comandos útiles, hallazgos, fragmentos de código.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Título corto' },
+        text: { type: 'string', description: 'Contenido (markdown)' },
+        tags: { type: 'array', items: { type: 'string' }, description: 'Etiquetas opcionales' },
+      },
+      required: ['title', 'text'],
+    },
+  },
+  {
+    name: 'bridge_vault_search',
+    description: 'Busca en el Baúl de Agentic Bridge notas guardadas por el humano u otras sesiones. Sin "query" devuelve las más recientes.',
+    inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'number' } } },
+  },
 ];
 
 function fmtTime(iso) { const d = new Date(iso); return isNaN(d) ? '' : String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
@@ -169,6 +187,15 @@ async function runTool(name, args) {
   if (name === 'bridge_join') {
     const out = await call('POST', '/api/bridge/join', { from: await from(), room: args.room });
     return 'Te uniste a #' + out.room + '. Sus mensajes llegarán a tu buzón.';
+  }
+  if (name === 'bridge_vault_save') {
+    const out = await call('POST', '/api/bridge/vault', { from: await from(), title: args.title, text: args.text, tags: args.tags });
+    return 'Guardado en el Baúl: "' + out.title + '".';
+  }
+  if (name === 'bridge_vault_search') {
+    const list = await call('GET', '/api/bridge/vault?' + qs({ q: args.query, limit: args.limit }));
+    if (!list.length) return args.query ? 'Nada en el Baúl coincide con "' + args.query + '".' : 'El Baúl está vacío.';
+    return list.map((n) => '## ' + n.title + (n.tags.length ? '  #' + n.tags.join(' #') : '') + '\n_' + (n.author || '?') + ' · ' + n.updatedAt.slice(0, 16).replace('T', ' ') + '_\n\n' + n.text + (n.attachments.length ? '\n\nAdjuntos: ' + n.attachments.join(', ') : '')).join('\n\n---\n\n');
   }
   throw new Error('Herramienta desconocida: ' + name);
 }

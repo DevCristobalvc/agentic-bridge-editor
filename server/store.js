@@ -32,5 +32,6 @@ const prefs = collection('prefs', {});           // humanName, deliverOnStop, ..
 const roles = collection('roles', () => DEFAULT_ROLES.map((r) => Object.assign({}, r)));
 const projects = collection('projects', []);
 const usage = collection('usage', {});           // configDir -> normalized rate limits
+const vault = collection('vault', []);           // shared notes and snippets
 
-module.exports = { bus, aliases, prefs, roles, projects, usage };
+module.exports = { bus, aliases, prefs, roles, projects, usage, vault };

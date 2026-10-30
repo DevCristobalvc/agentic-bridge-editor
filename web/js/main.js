@@ -12,6 +12,7 @@ import { Files } from './views/files.js';
 import { Projects, newProject } from './views/projects.js';
 import { Team } from './views/team.js';
 import { Metrics } from './views/metrics.js';
+import { Vault } from './views/vault.js';
 
 const NAV = [
   { group: 'Espacio' },
@@ -23,11 +24,12 @@ const NAV = [
   { id: 'files', label: 'Archivos', icon: 'folder', title: 'Archivos' },
   { id: 'projects', label: 'Proyectos', icon: 'kanban', title: 'Proyectos', count: (s) => s.projects.length || null },
   { id: 'team', label: 'Equipo', icon: 'team', title: 'Equipo de agentes' },
+  { id: 'vault', label: 'Baúl', icon: 'book', title: 'Baúl compartido', count: (s) => s.vault.length || null },
   { group: 'Observa' },
   { id: 'metrics', label: 'Métricas', icon: 'chart', title: 'Métricas y suscripciones' },
 ];
 
-const VIEWS = { home: Home, sessions: Sessions, rooms: Rooms, terminals: Terminals, files: Files, projects: Projects, team: Team, metrics: Metrics };
+const VIEWS = { home: Home, sessions: Sessions, rooms: Rooms, terminals: Terminals, files: Files, projects: Projects, team: Team, vault: Vault, metrics: Metrics };
 const FIXED = new Set(['rooms', 'terminals', 'files']);
 
 function Rail({ route, collapsed, setCollapsed }) {
@@ -75,6 +77,8 @@ function Palette({ onClose }) {
     add('Acciones', 'Nueva sala de chat', 'rooms', () => newRoom(), 'acción');
     add('Acciones', 'Nuevo proyecto (modo todo.md)', 'kanban', () => { navigate('/projects'); setTimeout(newProject, 50); }, 'acción');
     add('Acciones', 'Abrir PowerShell integrada', 'terminal', () => newShell(), 'acción');
+    add('Acciones', 'Guardar algo en el Baúl', 'book', () => navigate('/vault'), 'acción');
+    for (const n of s.vault.slice(0, 30)) add('Baúl', n.title, 'book', () => navigate('/vault'), n.tags.map((t) => '#' + t).join(' ') || 'nota');
     add('Acciones', 'Conectar cuentas a Bridge', 'plug', () => attempt(() => api.post('/api/integration/connect'), 'Cuentas conectadas'), 'acción');
     add('Acciones', 'Ajustes', 'settings', openSettings, 'acción');
     for (const n of NAV) if (n.id) add('Ir a', n.label, n.icon, () => navigate('/' + n.id), 'vista');

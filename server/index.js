@@ -17,6 +17,7 @@ const projects = require('./projects');
 const connect = require('./connect');
 const agents = require('./agents');
 const claude = require('./claude');
+const vault = require('./vault');
 const { uid, clip } = require('./util');
 
 const VERSION = require('../package.json').version;
@@ -225,7 +226,14 @@ route('GET', '/api/state', () => ({
   roles: store.roles.get(),
   terminals: terminals.list(),
   usage: store.usage.get(),
+  vault: vault.list(),
 }));
+
+// vault
+route('GET', '/api/vault', (req, p, url) => vault.search(url.searchParams.get('q'), 500));
+route('POST', '/api/vault', async (req) => vault.save(await jsonBody(req), { kind: 'human', name: store.prefs.get().humanName || 'Tú' }));
+route('PUT', '/api/vault/:id', async (req, p) => vault.save(Object.assign(await jsonBody(req), { id: p.id })));
+route('DELETE', '/api/vault/:id', (req, p) => ({ ok: vault.remove(p.id) }));
 
 route('PATCH', '/api/prefs', async (req) => store.prefs.set(Object.assign({}, store.prefs.get(), await jsonBody(req))));
 
@@ -439,6 +447,15 @@ route('POST', '/api/bridge/send', async (req) => {
   const msg = rooms.post(room.meta.id, author, text, []);
   return { ok: true, room: room.meta.name, roomId: room.meta.id, messageId: msg.id };
 });
+route('POST', '/api/bridge/vault', async (req) => {
+  const b = await jsonBody(req);
+  const who = identify(b.from || {});
+  const author = who ? { kind: who.kind, name: who.name } : { kind: 'session', name: String(b.as || 'sesión').slice(0, 60) };
+  const note = vault.save({ title: b.title, text: b.text, tags: b.tags }, author);
+  return { ok: true, id: note.id, title: note.title };
+});
+route('GET', '/api/bridge/vault', (req, p, url) => vault.search(url.searchParams.get('q'), Math.min(50, Number(url.searchParams.get('limit')) || 10))
+  .map((n) => ({ id: n.id, title: n.title, tags: n.tags, author: n.author && n.author.name, updatedAt: new Date(n.updatedAt).toISOString(), text: clip(n.text, 4000), attachments: (n.attachments || []).map((a) => a.path) })));
 route('POST', '/api/bridge/join', async (req) => {
   const b = await jsonBody(req);
   const who = identify(b.from || {});

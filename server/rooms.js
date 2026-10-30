@@ -47,7 +47,11 @@ function load() {
 const saveTimers = new Map();
 function saveMeta(room) {
   clearTimeout(saveTimers.get(room.meta.id));
-  saveTimers.set(room.meta.id, setTimeout(() => writeJson(metaFile(room.meta.id), room.meta), 250));
+  saveTimers.set(room.meta.id, setTimeout(() => {
+    saveTimers.delete(room.meta.id);
+    // A room deleted in the meantime must not be written back to disk.
+    if (rooms.has(room.meta.id)) writeJson(metaFile(room.meta.id), room.meta);
+  }, 250));
 }
 
 // ---------- views ----------
@@ -187,6 +191,8 @@ function remove(id) {
   if (!room) return false;
   stop(id);
   rooms.delete(id);
+  clearTimeout(saveTimers.get(id));
+  saveTimers.delete(id);
   try { fs.rmSync(metaFile(id), { force: true }); fs.rmSync(logFile(id), { force: true }); } catch (e) {}
   emit('room:deleted', { id });
   return true;

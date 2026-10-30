@@ -46,6 +46,7 @@ const state = {
   roles: [],
   terminals: [],
   usage: {},
+  vault: [],
   activity: {},       // roomId -> memberId -> { state, text }
   roomMessages: {},   // roomId -> messages (only for rooms that were opened)
   overlay: null,      // { render, kind }
@@ -125,6 +126,7 @@ function handle(ev) {
     case 'roles': setState({ roles: data }); break;
     case 'prefs': setState({ prefs: data }); break;
     case 'usage': setState({ usage: data }); break;
+    case 'vault': setState({ vault: data }); break;
     case 'integration': setState({ integration: data }); break;
     case 'unread': setState((s) => ({ sessions: s.sessions.map((x) => (x.id === data.sessionId ? Object.assign({}, x, { unread: data.count }) : x)) })); break;
     default: break;
