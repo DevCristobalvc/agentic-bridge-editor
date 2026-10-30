@@ -73,7 +73,10 @@ function launchExternal({ name, configPath, cwd, resumeId, systemPromptFile, mod
   if (process.platform !== 'win32') throw new Error('Abrir terminal externa solo está implementado en Windows.');
   if (!fs.existsSync(wt)) throw new Error('No encontré Windows Terminal; usa la terminal integrada.');
   // wt receives the program and its arguments as separate argv entries: no shell in between.
-  spawn(wt, ['-w', '0', 'new-tab', '--title', name || 'claude', '-d', cwd, file, ...argv], { cwd, env, detached: true, stdio: 'ignore' }).unref();
+  // wt itself still splits its command line on ";" (even inside quotes) into more commands,
+  // so every semicolon is escaped as "\;" (a literal semicolon for wt).
+  const wtArg = (a) => String(a).replace(/;/g, '\\;');
+  spawn(wt, ['-w', '0', 'new-tab', '--title', name || 'claude', '-d', cwd, file, ...argv].map(wtArg), { cwd, env, detached: true, stdio: 'ignore' }).unref();
 }
 
 module.exports = { claudeBin, claudeArgv, childEnv, isDefaultConfig, launchExternal };

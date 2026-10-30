@@ -523,7 +523,7 @@ route('POST', '/api/boards', async (req) => { const out = boards.create((await j
 route('GET', '/api/boards/:ref', (req, p) => boards.read(boardRef(p)));
 route('PUT', '/api/boards/:ref', async (req, p) => {
   const b = await jsonBody(req, 40 * 1024 * 1024);
-  const out = boards.write(boardRef(p), b.scene);
+  const out = boards.write(boardRef(p), b.scene, b.base);
   broadcast({ type: 'board', data: { ref: out.ref, updatedAt: out.updatedAt, clientId: b.clientId || null } });
   return out;
 });
@@ -642,19 +642,27 @@ route('POST', '/api/bridge/vault', async (req) => {
 });
 route('GET', '/api/bridge/vault', (req, p, url) => vault.search(url.searchParams.get('q'), Math.min(50, Number(url.searchParams.get('limit')) || 10))
   .map((n) => ({ id: n.id, title: n.title, tags: n.tags, author: n.author && n.author.name, updatedAt: new Date(n.updatedAt).toISOString(), text: clip(n.text, 4000), attachments: (n.attachments || []).map((a) => a.path) })));
+// A board named by the agent is found by that name only (a typo is an error, not a note on some
+// other board). Without a name: the project of the agent's room, then the one holding its folder.
 function boardForAgent(ref, who) {
   const r = String(ref || '').trim().toLowerCase();
   const list = projects.list();
-  let proj = r ? list.find((x) => x.id === ref || x.name.toLowerCase() === r || x.slug === r) : null;
-  if (!proj && who && who.kind === 'agent') {
+  if (r) {
+    const proj = list.find((x) => x.id === ref || x.name.toLowerCase() === r || x.slug === r);
+    if (proj) return 'p:' + proj.id;
+    const free = boards.list().find((x) => x.kind === 'free' && x.name.toLowerCase() === r);
+    if (free) return free.ref;
+    throw fail(404, 'No encontré la pizarra o el proyecto "' + ref + '". Proyectos: ' + (list.map((x) => x.name).join(', ') || 'ninguno') + '.');
+  }
+  let proj = null;
+  if (who && who.kind === 'agent') {
     const room = rooms.raw(who.roomId);
     proj = room && room.meta.projectId ? list.find((x) => x.id === room.meta.projectId) : null;
   }
-  if (!proj && who && who.cwd) proj = list.find((x) => who.cwd.toLowerCase().startsWith(x.path.toLowerCase()));
+  const inside = (dir, root) => { const d = dir.toLowerCase().replace(/[\\/]+$/, ''); const p = root.toLowerCase().replace(/[\\/]+$/, ''); return d === p || d.startsWith(p + path.sep) || d.startsWith(p + '/'); };
+  if (!proj && who && who.cwd) proj = list.filter((x) => inside(who.cwd, x.path)).sort((a, b) => b.path.length - a.path.length)[0] || null;
   if (proj) return 'p:' + proj.id;
-  const free = boards.list().find((x) => x.kind === 'free' && x.name.toLowerCase() === r);
-  if (free) return free.ref;
-  throw fail(404, r ? 'No encontré la pizarra o el proyecto "' + ref + '"' : 'Indica el proyecto o la pizarra (board).');
+  throw fail(404, 'Indica el proyecto o la pizarra (board): no estás en la sala ni en la carpeta de ningún proyecto.');
 }
 route('GET', '/api/bridge/board', (req, p, url) => {
   const q = Object.fromEntries(url.searchParams);

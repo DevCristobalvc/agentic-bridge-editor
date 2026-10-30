@@ -219,7 +219,7 @@ async function gitIdentity({ name, email }) {
   const set = async (k, v) => {
     if (v == null) return;
     const val = String(v).trim().slice(0, 120);
-    if (/[\r\n]/.test(val)) throw Object.assign(new Error('Valor inválido'), { status: 400 });
+    if (/[\r\n%!"]/.test(val)) throw Object.assign(new Error('El valor no puede llevar saltos de línea ni los caracteres % ! "'), { status: 400 });
     const r = await bin.run('git', ['config', '--global', k, val], { timeout: 5000 });
     if (!r.ok) throw Object.assign(new Error(lastLine(r.stderr) || 'git config falló'), { status: 502 });
   };

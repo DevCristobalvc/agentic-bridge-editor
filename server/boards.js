@@ -41,7 +41,7 @@ function list() {
     const file = path.join(DIR, n);
     const scene = readJson(file, null);
     const st = stat(file);
-    out.push({ ref: n.replace(/\.excalidraw$/, ''), kind: 'free', name: (scene && scene.bridge && scene.bridge.name) || 'Pizarra', updatedAt: st ? st.mtimeMs : 0, elements: scene ? (scene.elements || []).filter((e) => !e.isDeleted).length : 0 });
+    out.push({ ref: n.replace(/\.excalidraw$/, ''), kind: 'free', name: scene ? (scene.bridge && scene.bridge.name) || 'Pizarra' : 'Pizarra dañada (' + n + ')', broken: !scene, updatedAt: st ? st.mtimeMs : 0, elements: scene ? (scene.elements || []).filter((e) => !e.isDeleted).length : 0 });
   }
   for (const p of store.projects.get()) {
     const st = stat(path.join(p.path, '.bridge', 'board.excalidraw'));
@@ -56,17 +56,34 @@ function create(name) {
   return { ref, name: name || 'Pizarra' };
 }
 
+// A board that does not exist yet starts empty. One that exists but does not parse (a git merge
+// conflict, a hand edit) is never treated as empty: that would let the next save erase it.
+function load(b) {
+  let raw;
+  try { raw = fs.readFileSync(b.file, 'utf8'); } catch (e) {
+    if (e.code === 'ENOENT') return emptyScene(b.name);
+    throw e;
+  }
+  try { return JSON.parse(raw.replace(/^﻿/, '')); } catch (e) {
+    throw Object.assign(new Error('La pizarra ' + b.file + ' no es JSON válido (¿un conflicto de git?). Corrígela a mano o restáurala; Bridge no la sobrescribe.'), { status: 409 });
+  }
+}
+
 function read(ref) {
   const b = resolve(ref);
   const st = stat(b.file);
-  const scene = (st && readJson(b.file, null)) || emptyScene(b.name);
+  const scene = load(b);
   return { ref: b.ref, kind: b.kind, projectId: b.projectId || null, name: b.name || (scene.bridge && scene.bridge.name) || 'Pizarra', updatedAt: st ? st.mtimeMs : 0, scene };
 }
 
-function write(ref, scene) {
+// base: the updatedAt the client last loaded or saved. If the file changed since (another tab,
+// a note from an agent), the save is refused with 412 and the client merges before retrying.
+function write(ref, scene, base) {
   const b = resolve(ref);
   if (!scene || !Array.isArray(scene.elements)) throw Object.assign(new Error('Escena inválida'), { status: 400 });
-  const prev = readJson(b.file, null);
+  const st = stat(b.file);
+  if (st && base != null && Math.abs(st.mtimeMs - Number(base)) > 0.5) throw Object.assign(new Error('La pizarra cambió en otra parte; se combinan los cambios y se guarda de nuevo.'), { status: 412 });
+  const prev = load(b);
   const out = Object.assign({ type: 'excalidraw', version: 2, source: 'agentic-bridge' }, scene);
   out.bridge = Object.assign({}, (prev && prev.bridge) || { createdAt: Date.now() }, scene.bridge || {});
   // Notes that arrived while this scene was open survive the save unless it consumed them.
@@ -80,7 +97,7 @@ function write(ref, scene) {
 function rename(ref, name) {
   const b = resolve(ref);
   if (b.kind !== 'free') throw Object.assign(new Error('La pizarra de un proyecto lleva su nombre'), { status: 400 });
-  const scene = readJson(b.file, null) || emptyScene(name);
+  const scene = load(b);
   scene.bridge = Object.assign({}, scene.bridge, { name: String(name || 'Pizarra').slice(0, 80) });
   writeJson(b.file, scene);
   return { ref: b.ref, name: scene.bridge.name };
@@ -96,7 +113,7 @@ function remove(ref) {
 // A sticky note from an agent or a session, applied by the next client that has the board open.
 function addNote(ref, { text, author, tone }) {
   const b = resolve(ref);
-  const scene = readJson(b.file, null) || emptyScene(b.name);
+  const scene = load(b);
   const note = { id: uid('n'), text: clip(String(text || '').trim(), 1200), author: clip(String(author || ''), 60), tone: tone || null, at: Date.now() };
   if (!note.text) throw Object.assign(new Error('La nota está vacía'), { status: 400 });
   scene.bridgePending = (scene.bridgePending || []).concat([note]);

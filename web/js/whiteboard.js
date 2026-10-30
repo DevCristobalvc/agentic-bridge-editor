@@ -57,11 +57,13 @@ function appTheme() {
 }
 
 // ---------- storage backends ----------
+// Saves carry the version this tab last saw; the hub refuses (412) a save over a newer file.
 function boardStore(ref) {
   const url = '/api/boards/' + encodeURIComponent(ref);
+  let base = null;
   return {
-    load: () => api.get(url).then((b) => ({ name: b.name, scene: b.scene, projectId: b.projectId })),
-    save: (scene, consumed) => api.put(url, { scene: Object.assign({}, scene, { bridgeConsumed: consumed }), clientId }),
+    load: () => api.get(url).then((b) => { base = b.updatedAt; return { name: b.name, scene: b.scene, projectId: b.projectId }; }),
+    save: (scene, consumed) => api.put(url, { scene: Object.assign({}, scene, { bridgeConsumed: consumed }), clientId, base }).then((r) => { base = r.updatedAt; return r; }),
     matches: (data) => data && data.ref === ref,
   };
 }
@@ -109,10 +111,17 @@ class Board {
     this.syncTimer = null;
     this.tasks = null;
     this.inflight = new Map();
+    this.rejected = new Set();
     this.consumed = [];
-    this.saving = false;
-    this.dirty = false;
+    this.savePromise = null;
     this.destroyed = false;
+    // Closing the browser tab with unsaved strokes: ask the browser to wait while they are saved.
+    this.onUnload = (e) => { if (this.isDirty()) { this.save(true); e.preventDefault(); e.returnValue = ''; } };
+  }
+
+  isDirty() {
+    if (!this.api || !this.lib) return false;
+    return this.consumed.length > 0 || this.lib.getSceneVersion(this.api.getSceneElementsIncludingDeleted()) !== this.savedVersion;
   }
 
   async mount(lib, el) {
@@ -145,6 +154,7 @@ class Board {
     this.props = props;
     this.root = window.ReactDOM.createRoot(el);
     this.root.render(R.createElement(lib.Excalidraw, props));
+    window.addEventListener('beforeunload', this.onUnload);
   }
 
   topRight(R) {
@@ -187,10 +197,9 @@ class Board {
     if (!this.lib || this.destroyed) return;
     const v = this.lib.getSceneVersion(els);
     if (v !== this.savedVersion) {
-      this.dirty = true;
       this.onStatus && this.onStatus('editing');
       clearTimeout(this.saveTimer);
-      this.saveTimer = setTimeout(() => this.save(), 1100);
+      this.saveTimer = setTimeout(() => this.save(), 900);
     }
     const busy = appState.selectedElementsAreBeingDragged || appState.draggingElement || appState.resizingElement || appState.editingElement;
     if (this.tasks && !busy) {
@@ -199,31 +208,53 @@ class Board {
     }
   }
 
-  async save(force) {
-    if (!this.api || (this.destroyed && !force)) return;
-    if (this.saving) { clearTimeout(this.saveTimer); this.saveTimer = setTimeout(() => this.save(), 500); return; }
-    const els = this.api.getSceneElements();
-    const version = this.lib.getSceneVersion(this.api.getSceneElementsIncludingDeleted());
-    const scene = JSON.parse(this.lib.serializeAsJSON(els, this.api.getAppState(), this.api.getFiles(), 'local'));
-    scene.source = 'agentic-bridge';
-    this.saving = true;
-    this.onStatus && this.onStatus('saving');
-    try {
-      await this.store.save(scene, this.consumed.slice());
-      this.consumed = [];
-      this.savedVersion = version;
-      this.base = new Map(els.map((e) => [e.id, e.version]));
-      this.dirty = false;
-      this.onStatus && this.onStatus('saved');
-    } catch (e) {
-      this.onStatus && this.onStatus('error');
-      toast('No pude guardar la pizarra: ' + e.message, 'bad');
-    } finally { this.saving = false; }
+  // One save at a time; a save asked for while another runs follows it. `force` saves even while
+  // the board is being torn down (leaving the view must not lose the last strokes).
+  save(force, attempt) {
+    if (!this.api || (this.destroyed && !force)) return Promise.resolve();
+    if (this.savePromise) return this.savePromise.then(() => (this.isDirty() ? this.save(force) : null));
+    const job = (async () => {
+      const els = this.api.getSceneElements();
+      const version = this.lib.getSceneVersion(this.api.getSceneElementsIncludingDeleted());
+      const consumed = this.consumed.slice();
+      const scene = JSON.parse(this.lib.serializeAsJSON(els, this.api.getAppState(), this.api.getFiles(), 'local'));
+      scene.source = 'agentic-bridge';
+      this.onStatus && this.onStatus('saving');
+      try {
+        await this.store.save(scene, consumed);
+        this.consumed = this.consumed.filter((id) => !consumed.includes(id));
+        this.savedVersion = version;
+        this.base = new Map(els.map((e) => [e.id, e.version]));
+        return 'ok';
+      } catch (e) {
+        if (e.status === 412 && (attempt || 0) < 3) return 'conflict';
+        this.onStatus && this.onStatus('error');
+        toast('No pude guardar la pizarra: ' + e.message, 'bad');
+        return 'error';
+      }
+    })();
+    this.savePromise = job.finally(() => { this.savePromise = null; });
+    return this.savePromise.then(async (result) => {
+      if (result === 'conflict') {
+        // Someone else saved first: take their changes, then save the combination.
+        await this.remoteChanged(true);
+        return this.save(force, (attempt || 0) + 1);
+      }
+      if (result !== 'ok') return null;
+      if (this.isDirty()) {
+        // Edits made while the request was in flight: save them too.
+        this.onStatus && this.onStatus('editing');
+        if (this.destroyed) return this.save(true);
+        clearTimeout(this.saveTimer);
+        this.saveTimer = setTimeout(() => this.save(), 400);
+      } else this.onStatus && this.onStatus('saved');
+      return null;
+    });
   }
 
   // A save from another tab, or a note from an agent.
-  async remoteChanged() {
-    if (!this.api || this.destroyed) return;
+  async remoteChanged(force) {
+    if (!this.api || (this.destroyed && !force)) return;
     let data;
     try { data = await this.store.load(); } catch (e) { return; }
     const remote = this.lib.restoreElements((data.scene && data.scene.elements) || [], null);
@@ -389,6 +420,10 @@ class Board {
         if (where !== t.status && lanes.has(t.status)) { place(rect, t.status); rect = byId.get(rect.id); }
         put(newElementWith(rect, { customData: Object.assign({}, rect.customData, { synced: t.status }) }));
         rect = byId.get(rect.id);
+      } else if (where && where !== t.status && this.rejected.has(t.id)) {
+        // todo.md refused the move (read-only file, project gone): the card goes back.
+        this.rejected.delete(t.id);
+        if (lanes.has(t.status)) { place(rect, t.status); rect = byId.get(rect.id); }
       } else if (where && where !== t.status && this.inflight.get(t.id) !== where) {
         // The person dragged the card to another column: write it to todo.md.
         this.inflight.set(t.id, where);
@@ -470,9 +505,12 @@ class Board {
     this.destroyed = true;
     clearTimeout(this.syncTimer);
     clearTimeout(this.saveTimer);
-    // Leaving the board with unsaved strokes: save them before letting Excalidraw go.
-    if (this.dirty && this.api) this.save(true).finally(() => this.unmount());
-    else this.unmount();
+    window.removeEventListener('beforeunload', this.onUnload);
+    // Leaving the board: let a running save finish, save what is still pending, then let
+    // Excalidraw go (the detached React tree still answers getSceneElements meanwhile).
+    Promise.resolve(this.savePromise).catch(() => {})
+      .then(() => (this.isDirty() ? this.save(true) : null)).catch(() => {})
+      .finally(() => this.unmount());
   }
 
   unmount() { try { this.root && this.root.unmount(); } catch (e) {} this.root = null; this.api = null; }
@@ -497,7 +535,7 @@ export function Whiteboard({ boardRef, file, title, project, fullscreen, onExitF
         for (const m of moves) {
           api.patch('/api/projects/' + project.id + '/tasks/' + encodeURIComponent(m.taskId), { status: m.status })
             .then(() => toast(m.taskId + ' → ' + LANES.find((l) => l.key === m.status).name + ' (todo.md actualizado)'))
-            .catch((e) => { b.inflight.delete(m.taskId); toast(e.message, 'bad'); });
+            .catch((e) => { b.inflight.delete(m.taskId); b.rejected.add(m.taskId); b.sync(); toast('No pude mover ' + m.taskId + ': ' + e.message, 'bad'); });
         }
       },
     });

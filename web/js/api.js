@@ -16,7 +16,7 @@ async function request(method, url, body, opts = {}) {
   }
   const res = await fetch(url, { method, headers, body: payload });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || 'Error ' + res.status);
+  if (!res.ok) throw Object.assign(new Error(data.error || 'Error ' + res.status), { status: res.status });
   return data;
 }
 

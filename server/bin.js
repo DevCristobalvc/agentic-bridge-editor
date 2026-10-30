@@ -37,6 +37,10 @@ function quoteArg(a) {
 // spawn-style [file, args, extraOptions] for a resolved binary.
 function argv(bin, args) {
   if (isWin && /\.(cmd|bat)$/i.test(bin)) {
+    // cmd.exe expands %VAR% (and !VAR!) even inside quotes, and quotes can't be escaped
+    // reliably: an argument carrying any of these never reaches a .cmd wrapper.
+    const bad = args.find((a) => /[%!"\r\n]/.test(String(a)));
+    if (bad !== undefined) throw Object.assign(new Error('Argumento no permitido para ' + path.basename(bin) + ': ' + String(bad).slice(0, 40)), { status: 400 });
     const line = '"' + [bin].concat(args).map(quoteArg).join(' ') + '"';
     return [process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', line], { windowsVerbatimArguments: true }];
   }
@@ -48,7 +52,10 @@ function run(name, args, opts) {
   const o = opts || {};
   const bin = o.bin || which(name, o.extra);
   if (!bin) return Promise.resolve({ ok: false, code: null, stdout: '', stderr: '', missing: true });
-  const [file, list, extra] = argv(bin, args || []);
+  let file;
+  let list;
+  let extra;
+  try { [file, list, extra] = argv(bin, args || []); } catch (e) { return Promise.resolve({ ok: false, code: null, stdout: '', stderr: e.message }); }
   return new Promise((resolve) => {
     const child = execFile(file, list, Object.assign({
       timeout: o.timeout || 10000, windowsHide: true, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8', env: o.env || process.env, cwd: o.cwd,

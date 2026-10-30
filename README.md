@@ -67,8 +67,10 @@ flowchart LR
   - `bridge_whoami`, `bridge_sessions` y `bridge_rooms`;
   - `bridge_read`, `bridge_send` y `bridge_join`;
   - `bridge_vault_save` y `bridge_vault_search`;
-  - `bridge_board_read` y `bridge_board_note`.
+  - `bridge_board_read` y `bridge_board_note`;
+  - `bridge_room_invite` y `bridge_room_create_agent`, solo para quien coordina una sala: invita sesiones abiertas o crea agentes con un rol.
 - **Hooks de buzón**: `UserPromptSubmit` entrega los mensajes pendientes como contexto. Con `Stop`, si llegó algo mientras la sesión trabajaba, le pide responder antes de detenerse (una sola vez).
+- **Entrega mientras la sesión trabaja**: se activa en Ajustes y es opcional. Un hook `PostToolUse` entrega los mensajes entre una herramienta y la siguiente. Sin pendientes no hace llamadas de red, y no lee claves ni toca nada interno de Claude Code.
 - **Agentes de sala**: cada agente es una sesión de Claude con memoria propia que Bridge conduce turno a turno (`claude -p --output-format stream-json --resume`). Se activan con `@menciones`, con un tope de turnos automáticos y de presupuesto.
 - **Cockpit**: el statusline (en `integrations/cockpit/`) publica su estado en `~/.claude/crew/` y avisa cuando hay mensajes de Bridge.
 
@@ -121,7 +123,7 @@ La pizarra del proyecto se guarda en `.bridge/board.excalidraw`, un archivo est�
 ## Seguridad
 
 - **Red local:** el servidor solo escucha en `127.0.0.1` y rechaza otros `Host` (protección contra DNS rebinding) y otros `Origin`. Exige un token local (`~/.agentic-bridge/token`) en cada llamada a la API y al WebSocket.
-- **Credenciales:** se cifran con AES-256-GCM, y la llave maestra queda protegida con DPAPI de Windows, así que solo tu usuario puede descifrarlas. Nunca pasan por las salas ni por el MCP: solo salen cuando las revelas o como variables de entorno de una terminal que tú abres.
+- **Credenciales:** se cifran con AES-256-GCM, y la llave maestra queda protegida con DPAPI de Windows. Una copia de esos archivos no sirve en otro equipo ni con otro usuario de Windows. Bridge nunca se las pasa a los agentes (ni por las salas ni por las herramientas `bridge_*`): solo salen cuando las revelas en el editor o como variables de entorno de una terminal que tú abres. Como pasa con cualquier secreto guardado para tu usuario, un programa que corra con tu mismo usuario de Windows podría abrirlas.
 - **Cuentas externas:** Bridge las lee de sus propios CLI y no guarda sus tokens. Iniciar o cerrar sesión ejecuta el comando oficial de cada CLI en una terminal que ves.
 - **Contenido:** el Markdown se sanitiza con DOMPurify, y los SVG y documentos se sirven con una CSP que impide ejecutar scripts.
 - **Guardas:** las del contrato se aplican en cualquier modo de permisos, incluso "sin preguntas".

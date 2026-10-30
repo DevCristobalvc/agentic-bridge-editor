@@ -1,8 +1,10 @@
 'use strict';
 // Encrypted credentials. Each value is sealed with AES-256-GCM under a master key; on Windows the
-// master key itself is protected with DPAPI (CurrentUser), so only this Windows user can open it.
-// Values never travel to agents or the MCP bridge: they leave only on an explicit reveal or as
-// environment variables of a terminal the person opens.
+// master key itself is protected with DPAPI (CurrentUser): copies of these files are useless on
+// another machine or to another Windows user. Bridge never hands values to agents (no /api/bridge
+// route, no room, no MCP tool): they leave only on an explicit reveal in the editor or as env vars
+// of a terminal the person opens. A program running as this same Windows user could still unlock
+// them, as with any secret stored for that user.
 
 const fs = require('fs');
 const path = require('path');
@@ -34,10 +36,14 @@ async function key() {
   if (masterKey) return masterKey;
   if (loading) return loading;
   loading = (async () => {
-    const stored = readJson(KEY_FILE, null);
-    if (stored && stored.key) {
+    // A key file that exists but can't be read or unlocked is an error, never a reason to make a
+    // new key: that would leave every stored credential undecryptable for good.
+    if (fs.existsSync(KEY_FILE)) {
+      const stored = readJson(KEY_FILE, null);
+      if (!stored || !stored.key) throw Object.assign(new Error('No pude leer ' + KEY_FILE + '; las credenciales quedan bloqueadas hasta restaurarlo.'), { status: 500 });
       masterKey = stored.scheme === 'dpapi' ? Buffer.from(await dpapi('Unprotect', stored.key), 'base64') : Buffer.from(stored.key, 'base64');
     } else {
+      if (all().length) throw Object.assign(new Error('Falta ' + KEY_FILE + ' y hay credenciales guardadas: restáuralo para poder abrirlas.'), { status: 500 });
       const fresh = crypto.randomBytes(32);
       if (process.platform === 'win32') writeJson(KEY_FILE, { scheme: 'dpapi', key: await dpapi('Protect', fresh.toString('base64')) });
       else { writeJson(KEY_FILE, { scheme: 'file', key: fresh.toString('base64') }); try { fs.chmodSync(KEY_FILE, 0o600); } catch (e) {} }
@@ -83,6 +89,9 @@ function check(name) {
 async function save(input) {
   const name = String(input.name || '').trim();
   check(name);
+  // Unlock the key first (the first time runs PowerShell): read the list only afterwards, so two
+  // saves in that window can't write back each other's stale copy.
+  const k = typeof input.value === 'string' && input.value.length ? await key() : null;
   const items = all();
   const now = Date.now();
   const existing = input.id ? items.find((s) => s.id === input.id) : null;
@@ -92,11 +101,12 @@ async function save(input) {
   entry.service = String(input.service || '').slice(0, 60);
   entry.note = String(input.note || '').slice(0, 400);
   if (typeof input.value === 'string' && input.value.length) {
-    entry.value = seal(await key(), input.value);
+    entry.value = seal(k, input.value);
     entry.length = input.value.length;
-    // A short, non-secret hint to tell tokens apart (prefix like "ghp_" and the last 2 chars).
-    const v = input.value;
-    entry.hint = v.length > 10 ? v.slice(0, Math.min(4, Math.floor(v.length / 6))) + '…' + v.slice(-2) : mask(v.length);
+    // A hint to tell tokens apart without revealing them: only a well-known type prefix
+    // (ghp_, sk-, xoxb-…) and the length.
+    const prefix = (/^([A-Za-z]{2,5}[_-])/.exec(input.value) || [])[1] || '';
+    entry.hint = prefix + mask(input.value.length) + ' (' + input.value.length + ')';
   } else if (!existing) {
     throw Object.assign(new Error('Falta el valor'), { status: 400 });
   }
@@ -113,16 +123,17 @@ function remove(id) {
 }
 
 async function reveal(id) {
+  const k = await key();
   const s = all().find((x) => x.id === id);
   if (!s) throw Object.assign(new Error('Credencial no encontrada'), { status: 404 });
-  return { id: s.id, name: s.name, value: open(await key(), s.value) };
+  return { id: s.id, name: s.name, value: open(k, s.value) };
 }
 
 // name -> value for the given ids, to hand to a terminal as environment variables.
 async function envFor(ids) {
   if (!ids || !ids.length) return {};
-  const items = all();
   const k = await key();
+  const items = all();
   const out = {};
   const now = Date.now();
   for (const id of ids) {
