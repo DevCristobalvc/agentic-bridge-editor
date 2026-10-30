@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="es" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="bridge-token" content="%%TOKEN%%">
+<title>Agentic Bridge</title>
+<link rel="icon" href="/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/vendor/xterm.css">
+<link rel="stylesheet" href="/css/app.css">
+<script>
+  try { var t = localStorage.getItem('ab.theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; else if (t === 'system') delete document.documentElement.dataset.theme; } catch (e) {}
+</script>
+<script src="/vendor/xterm.js"></script>
+<script src="/vendor/addon-fit.js"></script>
+</head>
+<body>
+<div id="app"><div class="boot"><img src="/logo.svg" alt="" width="44" height="44"><span>Abriendo el puente…</span></div></div>
+<script type="module" src="/js/main.js"></script>
+</body>
+</html>

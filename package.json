@@ -1,0 +1,28 @@
+{
+  "name": "agentic-bridge-editor",
+  "version": "0.1.0",
+  "description": "Agentic Bridge — el editor web4: todas tus sesiones de Claude Code y Antigravity, de todas tus cuentas, en un solo puente local con salas de agentes, terminales, archivos, proyectos con contrato y métricas.",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js --open",
+    "serve": "node server/index.js",
+    "connect": "node scripts/connect.js",
+    "check": "node scripts/check.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": ["claude-code", "agents", "mcp", "multi-agent", "terminal", "web4", "antigravity"],
+  "license": "MIT",
+  "dependencies": {
+    "@highlightjs/cdn-assets": "^11.11.1",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
+    "dompurify": "^3.4.17",
+    "htm": "^3.1.1",
+    "marked": "^15.0.12",
+    "node-pty": "^1.1.0",
+    "preact": "^10.29.8",
+    "ws": "^8.22.0"
+  }
+}
