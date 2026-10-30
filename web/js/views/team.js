@@ -1,10 +1,9 @@
 // Team: the role library (supervisor, architect, developers, QA…) used by rooms, projects and sessions.
 import { html, useState } from '/vendor/htm-preact.js';
 import { api, useStore } from '../api.js';
-import { Btn, Icon, IconBtn, Empty, Modal, Field, Avatar, TagInput, ROLE_COLORS, openModal, closeModal, attempt, confirmDialog, useMenu } from '../ui.js';
+import { Btn, Icon, IconBtn, Empty, Modal, Field, Avatar, TagInput, ROLE_TONES, openModal, closeModal, attempt, confirmDialog, useMenu } from '../ui.js';
+import { ROLE_ICONS, EMOJI_ICON } from '../icons.js';
 import { MODELS, PERMISSIONS, newSession, newRoom } from '../dialogs.js';
-
-const EMOJIS = ['🧭', '🏛️', '🛠️', '🔍', '🛡️', '📝', '🎨', '📊', '⚙️', '🚀', '🧪', '🗄️', '📱', '🌐', '🤝', '🧠'];
 
 export function editRole(role) { openModal(() => html`<${RoleEditor} role=${role} />`); }
 
@@ -12,8 +11,8 @@ function RoleEditor({ role }) {
   const isNew = !role || !role.id;
   const base = role || {};
   const [name, setName] = useState(base.name || '');
-  const [emoji, setEmoji] = useState(base.emoji || '🤖');
-  const [color, setColor] = useState(base.color || ROLE_COLORS[0]);
+  const [icon, setIcon] = useState(base.icon || EMOJI_ICON[base.emoji] || 'bot');
+  const [color, setColor] = useState(ROLE_TONES.includes(base.color) ? base.color : ROLE_TONES[1]);
   const [description, setDescription] = useState(base.description || '');
   const [prompt, setPrompt] = useState(base.prompt || '');
   const [model, setModel] = useState(base.model || '');
@@ -24,7 +23,7 @@ function RoleEditor({ role }) {
   const save = async () => {
     if (!name.trim()) return;
     setBusy(true);
-    const body = { name: name.trim(), emoji, color, description, prompt, model, permissionMode, allowedTools };
+    const body = { name: name.trim(), icon, color, description, prompt, model, permissionMode, allowedTools };
     const ok = await attempt(() => (isNew ? api.post('/api/roles', body) : api.put('/api/roles/' + base.id, body)), isNew ? 'Rol creado' : 'Rol guardado');
     setBusy(false);
     if (ok) closeModal();
@@ -33,15 +32,15 @@ function RoleEditor({ role }) {
   return html`<${Modal} wide title=${isNew ? 'Nuevo rol' : 'Editar ' + base.name} subtitle="Los cambios aplican a los agentes que se creen desde ahora y al próximo turno de los existentes."
     footer=${html`<span class="left"></span><${Btn} kind="ghost" onClick=${closeModal}>Cancelar<//><${Btn} kind="primary" icon="check" busy=${busy} onClick=${save}>${isNew ? 'Crear rol' : 'Guardar'}<//>`}>
     <div class="row" style="gap:14px;align-items:flex-start">
-      <${Avatar} size="lg" emoji=${emoji} color=${color} />
+      <${Avatar} size="lg" icon=${icon} color=${color} />
       <div class="col grow" style="gap:10px">
         <div class="grid-2">
           <${Field} label="Nombre"><input class="input" autofocus value=${name} placeholder="p. ej. Diseñador UX" onInput=${(e) => setName(e.target.value)} /><//>
           <${Field} label="Descripción corta"><input class="input" value=${description} placeholder="Qué aporta al equipo" onInput=${(e) => setDescription(e.target.value)} /><//>
         </div>
         <div class="row wrap" style="gap:14px">
-          <div class="swatches">${EMOJIS.map((em) => html`<button type="button" class=${em === emoji ? 'on' : ''} style="background:var(--surface-3);font-size:13px" onClick=${() => setEmoji(em)}>${em}</button>`)}</div>
-          <div class="swatches">${ROLE_COLORS.map((c) => html`<button type="button" class=${c === color ? 'on' : ''} style=${{ background: c }} aria-label=${'Color ' + c} onClick=${() => setColor(c)}></button>`)}</div>
+          <div class="swatches icons">${ROLE_ICONS.map((ic) => html`<button type="button" class=${ic === icon ? 'on' : ''} title=${ic} aria-label=${'Icono ' + ic} onClick=${() => setIcon(ic)}><${Icon} name=${ic} /></button>`)}</div>
+          <div class="swatches">${ROLE_TONES.map((c) => html`<button type="button" class=${c === color ? 'on' : ''} style=${{ background: c }} aria-label=${'Tono ' + c} onClick=${() => setColor(c)}></button>`)}</div>
         </div>
       </div>
     </div>
@@ -71,7 +70,7 @@ export function Team() {
     </div>
     ${roles.length ? html`<div class="cards">${roles.map((r) => html`<div class="card role-card" style=${{ '--role': r.color }}>
       <div class="row">
-        <${Avatar} emoji=${r.emoji} color=${r.color} />
+        <${Avatar} icon=${r.icon} emoji=${r.emoji} color=${r.color} />
         <div class="grow"><h3>${r.name}</h3><div class="muted" style="font-size:12px">${usage(r.id)} agentes en salas</div></div>
         <${IconBtn} icon="more" title="Acciones" onClick=${(e) => openMenu(e, [
           { label: 'Editar', icon: 'pencil', run: () => editRole(r) },

@@ -1,6 +1,6 @@
 // Shared UI primitives and formatting helpers.
 import { html, useEffect, useRef, useState } from '/vendor/htm-preact.js';
-import { ICONS } from './icons.js';
+import { ICONS, EMOJI_ICON } from './icons.js';
 import { getState, setState } from './api.js';
 import { renderMarkdown } from './md.js';
 
@@ -34,11 +34,30 @@ export function Markdown({ text, cls }) {
   return html`<div class=${'md ' + (cls || '')} dangerouslySetInnerHTML=${{ __html: renderMarkdown(text) }}></div>`;
 }
 
-export function Avatar({ emoji, color, name, size, status }) {
-  const initial = (name || '?').trim().charAt(0).toUpperCase();
-  return html`<div class=${'avatar ' + (size || '')} style=${{ background: color || 'var(--surface-3)' }}>
-    ${emoji || initial}${status ? html`<span class=${'dot st ' + status}></span>` : null}
+// A line icon on a tile tinted with one of the purple tones; a letter when there is no icon.
+// `emoji` is accepted for data saved before icons existed and mapped to its icon.
+export function Avatar({ icon, emoji, color, name, size, status, human }) {
+  const glyph = icon || (emoji && EMOJI_ICON[emoji]) || null;
+  const tone = ROLE_TONES.includes(color) ? color : 'var(--v-400)';
+  const style = human ? null : { '--tone': tone };
+  return html`<div class=${'avatar ' + (size || '') + (human ? ' human' : glyph ? ' glyph' : ' letter')} style=${style}>
+    ${glyph ? html`<${Icon} name=${glyph} />` : (name || '?').trim().charAt(0).toUpperCase()}${status ? html`<span class=${'dot st ' + status}></span>` : null}
   </div>`;
+}
+
+// Tiny line chart for a series of numbers (0..max), one hue, no axes.
+export function Sparkline({ values, max, width, height, label }) {
+  const w = width || 120;
+  const h = height || 28;
+  const vs = (values || []).filter((v) => v != null);
+  if (vs.length < 2) return html`<span class="dim" style="font-size:11.5px">sin historial aún</span>`;
+  const top = max || Math.max(...vs) || 1;
+  const pts = vs.map((v, i) => [(i / (vs.length - 1)) * (w - 4) + 2, h - 2 - (Math.min(v, top) / top) * (h - 4)]);
+  const d = pts.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ');
+  return html`<svg class="spark" width=${w} height=${h} viewBox=${'0 0 ' + w + ' ' + h} role="img" aria-label=${label || 'tendencia'}>
+    <path d=${d + ' L' + (w - 2) + ' ' + (h - 2) + ' L2 ' + (h - 2) + 'Z'} class="area" /><path d=${d} class="line" />
+    <circle cx=${pts[pts.length - 1][0]} cy=${pts[pts.length - 1][1]} r="2.5" class="end" />
+  </svg>`;
 }
 
 export function Switch({ checked, onChange, label }) {
@@ -62,7 +81,7 @@ export function Field({ label, hint, children }) {
 
 export function Bar({ value, tone, width }) {
   const pct = Math.max(0, Math.min(100, value || 0));
-  const t = tone || (pct >= 85 ? 'bad' : pct >= 60 ? 'warn' : '');
+  const t = tone || (pct >= 95 ? 'bad' : pct >= 80 ? 'warn' : '');
   return html`<div class=${'bar ' + t} style=${{ width: width || '100%' }}><i style=${{ width: pct + '%' }}></i></div>`;
 }
 
@@ -132,6 +151,17 @@ export function confirmDialog({ title, text, confirm, danger }) {
     openModal(() => html`<${Modal} title=${title} onClose=${() => done(false)}
       footer=${html`<span class="left"></span><${Btn} kind="ghost" onClick=${() => done(false)}>Cancelar<//><${Btn} kind=${danger ? 'danger' : 'primary'} onClick=${() => done(true)}>${confirm || 'Confirmar'}<//>`}>
       <p style="margin:0;color:var(--text-2)">${text}</p>
+    <//>`);
+  });
+}
+
+export function promptDialog({ title, label, placeholder, confirm, value }) {
+  return new Promise((resolve) => {
+    let text = value || '';
+    const done = (v) => { closeModal(); resolve(v); };
+    openModal(() => html`<${Modal} title=${title} onClose=${() => done(null)}
+      footer=${html`<span class="left"></span><${Btn} kind="ghost" onClick=${() => done(null)}>Cancelar<//><${Btn} kind="primary" onClick=${() => done(text)}>${confirm || 'Aceptar'}<//>`}>
+      <${Field} label=${label}><input class="input" autofocus value=${value || ''} placeholder=${placeholder || ''} onInput=${(e) => { text = e.target.value; }} onKeyDown=${(e) => { if (e.key === 'Enter') done(e.target.value); }} /><//>
     <//>`);
   });
 }
@@ -275,7 +305,21 @@ export function useAutosize(ref, value) {
   }, [value]);
 }
 
-export const ROLE_COLORS = ['#a78bfa', '#8b5cf6', '#818cf8', '#c084fc', '#e879f9', '#f472b6', '#5eead4', '#7dd3fc', '#fbbf24', '#f59e0b', '#94a3b8', '#86efac'];
+// Same tones as server/roles.js: every role lives in the purple family.
+export const ROLE_TONES = ['#c4b5fd', '#a78bfa', '#8b5cf6', '#7c3aed', '#6d28d9', '#9d8cd9', '#b8a9e8', '#8270c9'];
+
+// Icon for a room member or message author, whatever era of data it comes from.
+export function memberIcon(m) {
+  if (!m) return 'bot';
+  if (m.icon) return m.icon;
+  if (m.emoji && EMOJI_ICON[m.emoji]) return EMOJI_ICON[m.emoji];
+  const role = m.roleId && getState().roles.find((r) => r.id === m.roleId);
+  return (role && role.icon) || 'bot';
+}
+
+export function sourceLabel(s) {
+  return s.source === 'antigravity' ? 'Antigravity' : s.account || 'cuenta desconocida';
+}
 
 export function useLocal(key, initial) {
   const [v, setV] = useState(() => {

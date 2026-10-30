@@ -70,6 +70,93 @@ function parseBoard(file) {
   return { file, tasks, totals: { todo: count('todo'), doing: count('doing'), blocked: count('blocked'), done: count('done'), all: tasks.length } };
 }
 
+// ---------- editing todo.md (from the board or the whiteboard) ----------
+const STATUS_WORD = { todo: 'todo', doing: 'in-progress', blocked: 'blocked', done: 'done' };
+
+function readTodo(p) {
+  const file = path.join(p.path, 'todo.md');
+  let txt = '';
+  try { txt = fs.readFileSync(file, 'utf8'); } catch (e) {}
+  const eol = /\r\n/.test(txt) ? '\r\n' : '\n';
+  return { file, txt, eol, lines: txt ? txt.split(/\r?\n/) : [] };
+}
+
+function taskBlock(lines, taskId) {
+  const start = lines.findIndex((l) => {
+    const h = TASK_HEADING.exec(l);
+    return h && String(h[1] || h[2] || '').replace(/[.)]$/, '') === taskId;
+  });
+  if (start === -1) return null;
+  let end = start + 1;
+  while (end < lines.length && !/^#{1,2}\s/.test(lines[end])) end++;
+  return { start, end };
+}
+
+function setField(lines, block, names, label, value) {
+  for (let i = block.start + 1; i < block.end; i++) {
+    const f = FIELD.exec(lines[i]);
+    if (f && names.includes(f[1].trim().toLowerCase())) {
+      const indent = /^\s*[-*]\s*/.exec(lines[i])[0];
+      lines[i] = indent + '**' + f[1].trim() + ':** ' + value;
+      return;
+    }
+  }
+  lines.splice(block.start + 1, 0, '- **' + label + ':** ' + value);
+  block.end++;
+}
+
+function updateTask(id, taskId, patch) {
+  const p = find(id);
+  if (!p) throw Object.assign(new Error('Proyecto no encontrado'), { status: 404 });
+  const t = readTodo(p);
+  const block = taskBlock(t.lines, String(taskId));
+  if (!block) throw Object.assign(new Error('No encontré la tarea ' + taskId + ' en todo.md'), { status: 404 });
+  if (patch.status) {
+    if (!STATUS_WORD[patch.status]) throw Object.assign(new Error('Estado inválido'), { status: 400 });
+    setField(t.lines, block, ['status', 'estado'], 'Status', STATUS_WORD[patch.status]);
+  }
+  if (patch.owner != null) setField(t.lines, block, ['owner', 'responsable', 'asignado'], 'Owner', String(patch.owner).replace(/[\r\n]/g, ' ').slice(0, 80));
+  if (patch.title != null) {
+    const h = TASK_HEADING.exec(t.lines[block.start]);
+    const tid = String(h[1] || h[2] || '').replace(/[.)]$/, '');
+    t.lines[block.start] = '## ' + tid + '. ' + String(patch.title).replace(/[\r\n]/g, ' ').slice(0, 160);
+  }
+  fs.writeFileSync(t.file, t.lines.join(t.eol));
+  return boardOf(p);
+}
+
+function addTask(id, input) {
+  const p = find(id);
+  if (!p) throw Object.assign(new Error('Proyecto no encontrado'), { status: 404 });
+  const title = String(input.title || '').replace(/[\r\n]+/g, ' ').trim().slice(0, 160);
+  if (!title) throw Object.assign(new Error('La tarea necesita un título'), { status: 400 });
+  const t = readTodo(p);
+  const board = parseBoard(t.file);
+  const max = Math.max(0, ...((board && board.tasks) || []).map((x) => { const m = /^T(\d+)$/i.exec(x.id); return m ? Number(m[1]) : 0; }));
+  const taskId = 'T' + String(max + 1).padStart(2, '0');
+  const status = STATUS_WORD[input.status] || 'todo';
+  const block = [
+    '## ' + taskId + '. ' + title,
+    '- **Status:** ' + status,
+    '- **Owner:** ' + (String(input.owner || '').replace(/[\r\n]/g, ' ').trim() || 'sin asignar'),
+    '- **Description:** ' + (String(input.description || '').replace(/[\r\n]+/g, ' ').trim() || title),
+    '- **Acceptance criteria:**',
+    '  - [ ] Por definir',
+    '',
+  ];
+  const base = t.txt ? t.txt.replace(/\s*$/, '') + t.eol + t.eol : '# Tablero — ' + p.name + t.eol + t.eol;
+  fs.writeFileSync(t.file, base + block.join(t.eol));
+  return { taskId, board: boardOf(p) };
+}
+
+function taskText(id, taskId) {
+  const p = find(id);
+  if (!p) return null;
+  const t = readTodo(p);
+  const block = taskBlock(t.lines, String(taskId));
+  return block ? t.lines.slice(block.start, block.end).join('\n').trim() : null;
+}
+
 function contractFile(p) { return path.join(p.path, '.bridge', 'contract.json'); }
 
 function bullet(list, empty) { return list && list.length ? list.map((x) => '- ' + x).join('\n') : '- ' + empty; }
@@ -99,7 +186,7 @@ function contractMarkdown(p, c, room) {
   const date = new Date().toISOString().slice(0, 10);
   const teamRows = room.meta.members.filter((m) => m.kind === 'agent').map((m) => {
     const role = store.roles.get().find((r) => r.id === m.roleId) || {};
-    return '| ' + (m.emoji || '') + ' ' + m.name + ' | `@' + m.handle + '` | ' + (role.description || '') + ' | ' + (m.configDir || 'cuenta por defecto') + ' | `' + m.permissionMode + '` |';
+    return '| ' + m.name + ' | `@' + m.handle + '` | ' + (role.description || '') + ' | ' + (m.configDir || 'cuenta por defecto') + ' | `' + m.permissionMode + '` |';
   });
   return [
     '# Contrato de trabajo — ' + p.name,
@@ -120,7 +207,7 @@ function contractMarkdown(p, c, room) {
     '| Rol | Handle | Responsabilidad | Cuenta | Permisos |',
     '|---|---|---|---|---|',
     ...teamRows,
-    '| 👤 ' + (store.prefs.get().humanName || 'Humano') + ' | — | Decide alcance, prioridades y aprueba lo irreversible | — | — |',
+    '| ' + (store.prefs.get().humanName || 'Humano') + ' (humano) | — | Decide alcance, prioridades y aprueba lo irreversible | — | — |',
     '',
     '## 4. Protocolo de comunicación',
     '- La sala del equipo es **"' + room.meta.name + '"** en Agentic Bridge. Todo acuerdo queda escrito ahí.',
@@ -325,4 +412,4 @@ function boardSignatures() {
   return store.projects.get().map((p) => ({ id: p.id, sig: statSig(path.join(p.path, 'todo.md')) + '|' + statSig(path.join(p.path, 'CONTRATO.md')) }));
 }
 
-module.exports = { create, importFolder, list, detail, saveContract, remove, plan, parseBoard, boardSignatures, DEFAULT_GUARDS };
+module.exports = { create, importFolder, list, detail, saveContract, remove, plan, parseBoard, boardSignatures, updateTask, addTask, taskText, find, DEFAULT_GUARDS };

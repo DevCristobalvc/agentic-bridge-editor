@@ -1,14 +1,30 @@
 // Files: folder tree + folder view + file viewer (code, markdown, images, PDF) with light editing.
 import { html, useEffect, useMemo, useRef, useState } from '/vendor/htm-preact.js';
-import { api, useStore, rawFileUrl } from '../api.js';
+import { api, useStore, rawFileUrl, getState } from '../api.js';
 import {
   Btn, Icon, IconBtn, Empty, Markdown, Modal, Seg, CopyBtn, Switch,
-  openModal, closeModal, toast, attempt, bytes, ago, useLocal, useNow, lightbox,
+  openModal, closeModal, toast, attempt, bytes, ago, useLocal, useNow, lightbox, useMenu,
 } from '../ui.js';
 import { iconFor } from '../icons.js';
 import { highlight, languageOf } from '../md.js';
 import { navigate } from '../router.js';
-import { newShell } from './terminals.js';
+import { terminalMenu } from './terminals.js';
+import { Whiteboard } from '../whiteboard.js';
+
+// ---------- favorites & recents ----------
+function baseName(p) { return String(p || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p; }
+function isFavorite(p) { return (getState().prefs.favorites || []).some((x) => sameDir(x.path, p)); }
+function toggleFavorite(p) {
+  const list = getState().prefs.favorites || [];
+  const was = isFavorite(p);
+  const next = was ? list.filter((x) => !sameDir(x.path, p)) : list.concat([{ path: p, label: baseName(p) }]);
+  return attempt(() => api.patch('/api/prefs', { favorites: next }), was ? 'Quitada de favoritas' : 'Agregada a favoritas');
+}
+const RECENT_KEY = 'ab.recentFiles';
+function recents() { try { return JSON.parse(localStorage.getItem(RECENT_KEY) || '[]'); } catch (e) { return []; } }
+function remember(p) {
+  try { localStorage.setItem(RECENT_KEY, JSON.stringify([p].concat(recents().filter((x) => x !== p)).slice(0, 8))); } catch (e) {}
+}
 
 const listCache = new Map();
 async function listDir(p, fresh) {
@@ -114,7 +130,7 @@ function ShareDialog({ file }) {
   const send = async (r) => {
     const image = file.kind === 'image';
     const ok = await attempt(() => api.post('/api/rooms/' + r.id + '/messages', {
-      text: (note.trim() ? note.trim() + '\n\n' : '') + '📎 `' + file.path + '`',
+      text: (note.trim() ? note.trim() + '\n\n' : '') + 'Archivo: `' + file.path + '`',
       attachments: [{ id: 'fs', name: file.name, type: image ? file.mime : 'text/plain', path: file.path, url: '/api/fs/raw?path=' + encodeURIComponent(file.path) }],
     }), 'Compartido en ' + r.name);
     if (ok) closeModal();
@@ -155,7 +171,9 @@ function FileViewer({ path }) {
       .then((f) => { if (current.current === asked) { setFile(f); setError(null); } })
       .catch((e) => { if (current.current === asked) setError(e.message); });
   };
-  useEffect(() => { setFile(null); setEditing(false); load(); }, [path]);
+  const [full, setFull] = useState(false);
+  useEffect(() => { setFile(null); setEditing(false); setFull(false); load(); }, [path]);
+  useEffect(() => { if (file) remember(file.path); }, [file && file.path]);
 
   const save = async () => {
     if (!file) return;
@@ -169,6 +187,16 @@ function FileViewer({ path }) {
   if (error) return html`<div class="viewer"><${Crumbs} path=${path} /><${Empty} icon="alert" title="No pude abrir el archivo">${error}<//></div>`;
   if (!file) return html`<div class="viewer"><${Crumbs} path=${path} /><div class="row muted" style="padding:24px"><span class="spinner"></span> Abriendo…</div></div>`;
 
+  if (file.ext === 'excalidraw') {
+    return html`<div class="viewer">
+      <${Crumbs} path=${file.path}>
+        <${Btn} size="sm" icon="maximize" onClick=${() => setFull(true)}>Pantalla completa<//>
+        <${IconBtn} icon="external" title="Mostrar en el Explorador" onClick=${() => attempt(() => api.post('/api/fs/open', { path: file.path }))} />
+      <//>
+      <div class="viewer-body" style="padding:12px"><${Whiteboard} key=${file.path} file=${file.path} title=${file.name} fullscreen=${full} onExitFull=${() => setFull(false)} /></div>
+      ${full ? html`<button type="button" class="btn sm" style="position:fixed;right:16px;bottom:16px;z-index:46" onClick=${() => setFull(false)}><${Icon} name="minimize" />Salir de pantalla completa</button>` : null}
+    </div>`;
+  }
   const isMd = file.kind === 'text' && /^(md|markdown|mdx)$/.test(file.ext);
   const isJson = file.kind === 'text' && file.ext === 'json';
   let content = null;
@@ -215,13 +243,17 @@ export function Files({ route }) {
   const [filterRaw, setFilter] = useState('');
   const [target, setTarget] = useState(null); // { kind: 'dir'|'file', dir? }
   const [error, setError] = useState(null);
+  const favorites = useStore((s) => s.prefs.favorites) || [];
+  const [openMenu, menu] = useMenu();
   const path = route.query.get('path') || lastPath || home;
   const filter = filterRaw.trim().toLowerCase();
 
   useEffect(() => { api.get('/api/fs/roots').then(setRoots).catch(() => {}); }, []);
   useEffect(() => {
-    if (!route.query.get('path') && path) { go(path); return; }
     if (!path) return;
+    // Put the folder in the URL, and load it now: the path itself does not change, so this
+    // effect would not run again after the redirect.
+    if (!route.query.get('path')) go(path);
     setLastPath(path);
     setError(null);
     listDir(path, true).then((d) => setTarget({ kind: 'dir', dir: d }))
@@ -240,16 +272,29 @@ export function Files({ route }) {
         </select>
         <div class="with-icon"><${Icon} name="search" /><input class="input" value=${filterRaw} placeholder="Filtrar por nombre" onInput=${(e) => setFilter(e.target.value)} /></div>
         <div class="row"><${Switch} checked=${showHidden} onChange=${setShowHidden} label="Ocultos" /><span class="grow"></span>
-          <${IconBtn} icon="terminal" title="PowerShell aquí" onClick=${() => newShell(target && target.kind === 'dir' ? path : String(path).replace(/[\\/][^\\/]*$/, ''))} />
+          <${IconBtn} icon="terminal" title="Abrir una terminal o un agente aquí" onClick=${(e) => openMenu(e, terminalMenu(target && target.kind === 'dir' ? path : String(path).replace(/[\\/][^\\/]*$/, '')))} />
           <${IconBtn} icon="refresh" title="Recargar" onClick=${() => { listCache.clear(); go(path + ''); setTarget(null); listDir(path, true).then((d) => setTarget({ kind: 'dir', dir: d })).catch(() => setTarget({ kind: 'file' })); }} />
         </div>
       </div>
+      ${favorites.length ? html`<div class="side-section">
+        <div class="label-row"><${Icon} name="star" /><span class="grow">Favoritas</span></div>
+        ${favorites.map((fv) => html`<div class=${'side-row' + (sameDir(fv.path, path) ? ' on' : '')} onClick=${() => go(fv.path)} title=${fv.path}>
+          <${Icon} name="folder" /><span class="ellipsis">${fv.label}</span>
+          <span class="x"><${IconBtn} icon="x" size="sm" title="Quitar de favoritas" onClick=${(e) => { e.stopPropagation(); toggleFavorite(fv.path); }} /></span>
+        </div>`)}
+      </div>` : null}
+      ${recents().length ? html`<div class="side-section">
+        <div class="label-row"><${Icon} name="history" /><span class="grow">Recientes</span></div>
+        ${recents().slice(0, 5).map((r) => html`<div class=${'side-row' + (sameDir(r, path) ? ' on' : '')} onClick=${() => go(r)} title=${r}><${Icon} name="file" /><span class="ellipsis">${baseName(r)}</span></div>`)}
+      </div>` : null}
       <div class="tree"><${TreeNode} key=${root} entry=${rootEntry} depth=${0} current=${path} showHidden=${showHidden} filter=${filter} /></div>
+      ${menu}
     </aside>
     ${error ? html`<div class="viewer"><${Crumbs} path=${path} /><${Empty} icon="alert" title="No pude abrir esta ruta">${error}<//></div>`
       : !target ? html`<div class="viewer"><${Crumbs} path=${path} /><div class="row muted" style="padding:24px"><span class="spinner"></span> Cargando…</div></div>`
       : target.kind === 'dir' ? html`<div class="viewer">
           <${Crumbs} path=${target.dir.path} sep=${target.dir.sep}>
+            <button type="button" class=${'icon-btn star' + (favorites.some((x) => sameDir(x.path, target.dir.path)) ? ' on' : '')} title=${favorites.some((x) => sameDir(x.path, target.dir.path)) ? 'Quitar de favoritas' : 'Agregar a favoritas'} onClick=${() => toggleFavorite(target.dir.path)}><${Icon} name="star" /></button>
             <${IconBtn} icon="link" title="Copiar ruta" onClick=${() => navigator.clipboard.writeText(target.dir.path).then(() => toast('Ruta copiada'))} />
             <${IconBtn} icon="code" title="Abrir en VS Code" onClick=${() => attempt(() => api.post('/api/fs/open', { path: target.dir.path, app: 'vscode' }))} />
             <${IconBtn} icon="external" title="Abrir en el Explorador" onClick=${() => attempt(() => api.post('/api/fs/open', { path: target.dir.path }))} />

@@ -1,11 +1,40 @@
 // Home: mission control for every session, account, room and project.
-import { html, useState } from '/vendor/htm-preact.js';
+import { html, useEffect, useState } from '/vendor/htm-preact.js';
 import { api, setState, useStore } from '../api.js';
-import { Btn, Icon, Bar, Avatar, Empty, money, tokens, ago, useNow, sessionState, shortPath, attempt, clock, uniqueAccounts } from '../ui.js';
+import { Btn, Icon, Bar, Avatar, Empty, money, tokens, ago, useNow, sessionState, shortPath, attempt, clock, uniqueAccounts, memberIcon } from '../ui.js';
 import { navigate } from '../router.js';
-import { newSession, newRoom } from '../dialogs.js';
+import { newSession, newRoom, newTerminal } from '../dialogs.js';
+import { newBoard } from './boards.js';
 import { newProject } from './projects.js';
 import { newShell } from './terminals.js';
+
+// Where you left off: the latest conversations of every account, one click to resume.
+function Continue() {
+  const sessions = useStore((s) => s.sessions);
+  const [list, setList] = useState(null);
+  const now = useNow(60000);
+  useEffect(() => { api.get('/api/history').then((d) => setList(d.conversations.slice(0, 6))).catch(() => setList([])); }, []);
+  if (!list || !list.length) return null;
+  const resume = async (c) => {
+    const live = sessions.find((x) => x.id === c.id && x.alive);
+    if (live) { navigate(live.terminalId ? '/terminals/' + live.terminalId : '/sessions/' + live.id); return; }
+    const r = c.source === 'antigravity'
+      ? await attempt(() => api.post('/api/agy/sessions', { conversationId: c.id, cwd: c.cwd, name: c.title.slice(0, 40) }))
+      : await attempt(() => api.post('/api/sessions', { resumeId: c.id, configDir: c.configDir, cwd: c.cwd, name: c.title.slice(0, 40), where: 'pty' }));
+    if (r && r.terminal) navigate('/terminals/' + r.terminal.id);
+  };
+  return html`<div class="card">
+    <div class="card-head"><${Icon} name="history" /><h3>Continuar donde quedaste</h3><a style="margin-left:auto;font-size:12.5px" href="#/history">Historial</a></div>
+    <div class="list">${list.map((c) => {
+      const live = sessions.some((x) => x.id === c.id && x.alive);
+      return html`<div class="list-row" onClick=${() => navigate('/history/' + encodeURIComponent(c.id))}>
+        <${Icon} name=${c.source === 'antigravity' ? 'orbit' : 'sparkles'} />
+        <div class="grow"><div class="t ellipsis">${c.title}</div><div class="s ellipsis">${c.project || shortPath(c.cwd)} · ${ago(c.lastAt, now)}</div></div>
+        <${Btn} size="sm" icon=${live ? 'arrow-right' : 'play'} onClick=${(e) => { e.stopPropagation(); resume(c); }}>${live ? 'Abrir' : 'Retomar'}<//>
+      </div>`;
+    })}</div>
+  </div>`;
+}
 
 export function UsageBars({ usage, compact }) {
   if (!usage) return html`<div class="muted" style="font-size:12.5px">Sin datos de uso todavía.</div>`;
@@ -92,7 +121,7 @@ export function Home() {
           return html`<div class="list-row" onClick=${() => navigate('/sessions/' + s.id)}>
             <span class=${'dot ' + st.cls}></span>
             <div class="grow">
-              <div class="row"><span class="t ellipsis">${s.name}</span>${s.unread ? html`<span class="chip accent">📨 ${s.unread}</span>` : null}${s.terminalId ? html`<span class="chip">integrada</span>` : null}</div>
+              <div class="row"><span class="t ellipsis">${s.name}</span>${s.unread ? html`<span class="chip accent"><${Icon} name="inbox" />${s.unread}</span>` : null}${s.terminalId ? html`<span class="chip">integrada</span>` : null}</div>
               <div class="s ellipsis">${s.source === 'antigravity' ? 'Antigravity' : s.account || '—'} · ${shortPath(s.cwd)}</div>
             </div>
             ${c && c.total ? html`<div class="col" style="width:90px;gap:3px;align-items:flex-end"><span class="dim mono" style="font-size:11px">${c.task ? 'Task ' + c.task : ''} ${c.done}/${c.total}</span><${Bar} value=${(100 * c.done) / c.total} tone="ok" /></div>` : null}
@@ -103,13 +132,14 @@ export function Home() {
       </div>
 
       <div class="col" style="gap:16px">
+        <${Continue} />
         <div class="card">
           <div class="card-head"><${Icon} name="zap" /><h3>Atajos</h3><kbd style="margin-left:auto">Ctrl K</kbd></div>
           <div class="quick">
             <button type="button" onClick=${() => newRoom()}><span class="ic"><${Icon} name="rooms" /></span><span><b>Sala de agentes</b><small>Supervisor, arquitecto, devs…</small></span></button>
             <button type="button" onClick=${() => { navigate('/projects'); setTimeout(newProject, 50); }}><span class="ic"><${Icon} name="scroll" /></span><span><b>Modo todo.md</b><small>Contrato + tablero</small></span></button>
-            <button type="button" onClick=${() => navigate('/files')}><span class="ic"><${Icon} name="folder-open" /></span><span><b>Archivos</b><small>Visor de carpetas</small></span></button>
-            <button type="button" onClick=${() => newShell()}><span class="ic"><${Icon} name="terminal" /></span><span><b>PowerShell</b><small>Terminal integrada</small></span></button>
+            <button type="button" onClick=${() => newBoard()}><span class="ic"><${Icon} name="board" /></span><span><b>Pizarra</b><small>Excalidraw para pensar</small></span></button>
+            <button type="button" onClick=${() => newTerminal({})}><span class="ic"><${Icon} name="terminal" /></span><span><b>Terminal</b><small>PowerShell, Git Bash, CMD</small></span></button>
           </div>
         </div>
         <div class="card">
@@ -124,7 +154,7 @@ export function Home() {
         <div class="card">
           <div class="card-head"><${Icon} name="rooms" /><h3>Salas recientes</h3><a style="margin-left:auto;font-size:12.5px" href="#/rooms">Todas</a></div>
           ${rooms.length ? html`<div class="list">${rooms.slice(0, 5).map((r) => html`<div class="list-row" onClick=${() => navigate('/rooms/' + r.id)}>
-            <div class="stack-avatars">${r.members.slice(0, 4).map((m) => html`<${Avatar} size="sm" emoji=${m.emoji || (m.kind === 'session' ? '⌘' : '')} color=${m.color} name=${m.name} />`)}</div>
+            <div class="stack-avatars">${r.members.slice(0, 4).map((m) => html`<${Avatar} size="sm" icon=${m.kind === 'session' ? 'terminal' : memberIcon(m)} color=${m.color} name=${m.name} />`)}</div>
             <div class="grow"><div class="t ellipsis">${r.name}</div><div class="s ellipsis">${r.last ? r.last.author.name + ': ' + r.last.text : 'Sin mensajes todavía'}</div></div>
             ${activity[r.id] && Object.keys(activity[r.id]).length ? html`<span class="spinner"></span>` : html`<span class="dim" style="font-size:12px">${ago(r.updatedAt, now)}</span>`}
           </div>`)}</div>` : html`<div class="card-body muted">Aún no hay salas. ${projects.length ? '' : 'Crea una o arma un proyecto con contrato.'}</div>`}

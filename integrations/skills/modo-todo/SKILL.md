@@ -67,3 +67,4 @@ En la raíz del proyecto (la carpeta de trabajo actual, salvo que el usuario ind
 - Una tarea se marca `done` solo cuando sus criterios se verificaron, no cuando se escribió el código.
 - Al empezar una tarea, cámbiala a `in-progress`; al trabarte, a `blocked` y explica el motivo en la sala.
 - Nunca intentes saltarte una guarda. Si una guarda bloquea algo necesario, explícalo y espera.
+- En Agentic Bridge, `todo.md` también se ve como un kanban en la pizarra del proyecto: cuando el humano arrastra una tarjeta, cambia el `**Status:**` de la tarea. Respeta ese cambio. Para dejar a la vista un riesgo, una decisión o una pregunta, usa `bridge_board_note`.

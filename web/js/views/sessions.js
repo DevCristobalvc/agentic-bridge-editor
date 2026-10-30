@@ -19,7 +19,9 @@ function resumeCommand(s) {
 }
 
 async function resumeHere(s) {
-  const r = await attempt(() => api.post('/api/sessions', { resumeId: s.id, configDir: s.configDir, cwd: s.cwd, name: s.name, where: 'pty' }));
+  const r = s.source === 'antigravity'
+    ? await attempt(() => api.post('/api/agy/sessions', { conversationId: s.id, cwd: s.cwd, name: s.name }))
+    : await attempt(() => api.post('/api/sessions', { resumeId: s.id, configDir: s.configDir, cwd: s.cwd, name: s.name, where: 'pty' }));
   if (r && r.terminal) { closeModal(); navigate('/terminals/' + r.terminal.id); }
 }
 
@@ -90,7 +92,7 @@ function SessionCard({ s, waiters, now }) {
         : html`<span class="name ellipsis" title="Doble clic para renombrar" onDblClick=${() => { setDraft(s.name); setRenaming(true); }}>${s.name}</span>`}
       ${s.source === 'antigravity' ? html`<span class="chip accent">Antigravity</span>` : null}
       ${s.terminalId ? html`<span class="chip">integrada</span>` : null}
-      ${s.unread ? html`<span class="chip accent" title="Mensajes de Bridge sin leer">📨 ${s.unread}</span>` : null}
+      ${s.unread ? html`<span class="chip accent" title="Mensajes de Bridge sin leer"><${Icon} name="inbox" />${s.unread}</span>` : null}
       ${!renaming ? html`<span class="when">${st.cls === 'busy' ? st.label : st.label + ' · ' + ago(s.updatedAt, now)}</span>` : null}
     </div>
     ${c && c.title && c.title !== s.name ? html`<div class="ellipsis" style="font-size:13px;color:var(--text-2)" title=${c.title}>${c.title}</div>` : null}
@@ -105,19 +107,20 @@ function SessionCard({ s, waiters, now }) {
       ${s.ctxPct != null ? html`<span class="row" style="gap:6px">ctx <${Bar} value=${s.ctxPct} width="56px" /> <b>${Math.round(s.ctxPct)}%</b></span>` : null}
       ${c && c.total ? html`<span class="row" style="gap:6px;margin-left:auto">${c.task ? html`<span class=${c.blocked ? 'bad' : ''}>Task ${c.task}${c.blocked ? '!' : ''}</span>` : null}<${Bar} value=${(100 * c.done) / c.total} tone="ok" width="56px" /><b>${c.done}/${c.total}</b></span>` : null}
     </div>
-    ${c && c.waitingOn ? html`<div class="flag waiting">⏳ Esperando: ${c.waitingOn}</div>` : null}
-    ${waiters.length ? html`<div class="flag needed">⇄ ${waiters.join(', ')} está esperando a esta sesión</div>` : null}
+    ${c && c.waitingOn ? html`<div class="flag waiting row" style="gap:6px"><${Icon} name="clock" />Esperando: ${c.waitingOn}</div>` : null}
+    ${waiters.length ? html`<div class="flag needed row" style="gap:6px"><${Icon} name="shuffle" />${waiters.join(', ')} está esperando a esta sesión</div>` : null}
     ${last ? html`<div class="preview"><b>${lastWho}:</b> ${last.text}</div>` : null}
     <div class="actions">
       ${s.terminalId ? html`<${Btn} size="sm" kind="primary" icon="terminal" onClick=${() => navigate('/terminals/' + s.terminalId)}>Abrir terminal<//>` : null}
       <${Btn} size="sm" icon="eye" onClick=${() => navigate('/sessions/' + s.id)}>Conversación<//>
-      ${s.alive && s.source === 'claude' ? html`<${Btn} size="sm" icon="send" onClick=${() => messageSession(s)}>Mensaje<//>` : null}
-      ${!s.alive && s.configPath ? html`<${Btn} size="sm" icon="play" onClick=${() => resumeHere(s)}>Retomar aquí<//>` : null}
+      ${s.alive ? html`<${Btn} size="sm" icon="send" onClick=${() => messageSession(s)}>Mensaje<//>` : null}
+      ${!s.alive && (s.configPath || s.source === 'antigravity') ? html`<${Btn} size="sm" icon="play" onClick=${() => resumeHere(s)}>Retomar aquí<//>` : null}
       <span class="grow"></span>
       <${IconBtn} icon="more" size="sm" title="Más acciones" onClick=${(e) => openMenu(e, [
         { label: 'Renombrar', icon: 'pencil', run: () => { setDraft(s.name); setRenaming(true); } },
-        s.alive && s.source === 'claude' ? { label: 'Agregar a una sala', icon: 'rooms', run: () => addToRoom(s) } : null,
+        s.alive ? { label: 'Agregar a una sala', icon: 'rooms', run: () => addToRoom(s) } : null,
         s.cwd ? { label: 'Ver su carpeta', icon: 'folder-open', run: () => navigate('/files?path=' + encodeURIComponent(s.cwd)) } : null,
+        { label: 'Historial completo', icon: 'history', run: () => navigate('/history/' + encodeURIComponent(s.id)) },
         '-',
         { label: 'Copiar ID', icon: 'copy', run: () => navigator.clipboard.writeText(s.id).then(() => toast('ID copiado')) },
         s.configPath ? { label: 'Copiar comando para retomar', icon: 'terminal', run: () => navigator.clipboard.writeText(resumeCommand(s)).then(() => toast('Comando copiado')) } : null,
@@ -134,12 +137,13 @@ function waitersFor(s, all) {
     .filter((p) => names.some((n) => p.crew.waitingOn.toLowerCase().includes(n))).map((p) => p.name);
 }
 
-function Transcript({ id, alive }) {
+function Transcript({ id, alive, source }) {
   const [data, setData] = useState(null);
   const box = useRef(null);
   useEffect(() => {
     let stop = false;
-    const load = () => api.get('/api/sessions/' + id + '/transcript?limit=250').then((d) => { if (!stop) setData(d); }).catch(() => {});
+    const url = source === 'antigravity' ? '/api/history/' + encodeURIComponent(id) + '?source=antigravity&limit=250' : '/api/sessions/' + id + '/transcript?limit=250';
+    const load = () => api.get(url).then((d) => { if (!stop) setData(d); }).catch(() => {});
     load();
     const t = alive ? setInterval(load, 6000) : null;
     return () => { stop = true; if (t) clearInterval(t); };
@@ -151,7 +155,7 @@ function Transcript({ id, alive }) {
     ${data.truncated ? html`<div class="dim" style="font-size:12px">Mostrando la parte más reciente.</div>` : null}
     ${data.entries.map((e) => (e.role === 'tool'
       ? html`<div class="t-entry tool"><div class="who">${e.name}</div><div class="body ellipsis">${e.text}</div></div>`
-      : html`<div class=${'t-entry ' + e.role}><div class="who">${e.role === 'user' ? 'Tú' : 'Claude'}</div><div class="body"><${Markdown} text=${e.text} /></div></div>`))}
+      : html`<div class=${'t-entry ' + e.role}><div class="who">${e.role === 'user' ? 'Tú' : source === 'antigravity' ? 'Agy' : 'Claude'}</div><div class="body"><${Markdown} text=${e.text} /></div></div>`))}
   </div>`;
 }
 
@@ -167,13 +171,14 @@ function SessionDrawer({ id }) {
       <span class=${'dot ' + st.cls}></span>
       <div class="grow"><b style="font-size:15px">${s.name}</b><div class="muted" style="font-size:12.5px">${st.label} · ${s.source === 'antigravity' ? 'Antigravity' : s.account || 'cuenta desconocida'}</div></div>
       ${s.terminalId ? html`<${Btn} size="sm" kind="primary" icon="terminal" onClick=${() => navigate('/terminals/' + s.terminalId)}>Terminal<//>` : null}
-      ${s.alive && s.source === 'claude' ? html`<${Btn} size="sm" icon="send" onClick=${() => messageSession(s)}>Mensaje<//>` : null}
-      ${!s.alive && s.configPath ? html`<${Btn} size="sm" icon="play" onClick=${() => resumeHere(s)}>Retomar<//>` : null}
+      ${s.alive ? html`<${Btn} size="sm" icon="send" onClick=${() => messageSession(s)}>Mensaje<//>` : null}
+      ${!s.alive && (s.configPath || s.source === 'antigravity') ? html`<${Btn} size="sm" icon="play" onClick=${() => resumeHere(s)}>Retomar<//>` : null}
+      <${IconBtn} icon="history" title="Historial completo" onClick=${() => navigate('/history/' + encodeURIComponent(s.id))} />
       <${IconBtn} icon="x" title="Cerrar" onClick=${close} />
     </div>
     <div style="padding:10px 18px 0"><${Seg} value=${tab} onChange=${setTab} options=${[{ value: 'chat', label: 'Conversación', icon: 'rooms' }, { value: 'info', label: 'Detalles', icon: 'info' }]} /></div>
     <div class="drawer-body">
-      ${tab === 'chat' ? html`<${Transcript} id=${s.id} alive=${s.alive} />` : html`<dl class="kv">
+      ${tab === 'chat' ? html`<${Transcript} id=${s.id} alive=${s.alive} source=${s.source} />` : html`<dl class="kv">
         <dt>ID</dt><dd class="mono row">${s.id}<${CopyBtn} text=${s.id} /></dd>
         <dt>Nombre en registro</dt><dd>${s.registryName || '—'}${s.alias ? html` <span class="chip">alias: ${s.alias}</span>` : null}</dd>
         <dt>Cuenta</dt><dd>${s.account || '—'} <span class="mono dim">${s.configDir || ''}</span></dd>

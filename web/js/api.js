@@ -47,6 +47,11 @@ const state = {
   terminals: [],
   usage: {},
   vault: [],
+  shells: [],
+  antigravity: null,
+  secrets: [],
+  connections: [],
+  boards: [],
   activity: {},       // roomId -> memberId -> { state, text }
   roomMessages: {},   // roomId -> messages (only for rooms that were opened)
   overlay: null,      // { render, kind }
@@ -128,6 +133,9 @@ function handle(ev) {
     case 'usage': setState({ usage: data }); break;
     case 'vault': setState({ vault: data }); break;
     case 'integration': setState({ integration: data }); break;
+    case 'secrets': setState({ secrets: data }); break;
+    case 'connections': setState({ connections: data }); break;
+    case 'boards': setState({ boards: data }); break;
     case 'unread': setState((s) => ({ sessions: s.sessions.map((x) => (x.id === data.sessionId ? Object.assign({}, x, { unread: data.count }) : x)) })); break;
     default: break;
   }

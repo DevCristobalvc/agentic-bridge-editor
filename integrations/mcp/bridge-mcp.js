@@ -143,6 +143,20 @@ const TOOLS = [
     description: 'Busca en el Baúl de Agentic Bridge notas guardadas por el humano u otras sesiones. Sin "query" devuelve las más recientes.',
     inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'number' } } },
   },
+  {
+    name: 'bridge_board_read',
+    description: 'Lee la pizarra (Excalidraw) de un proyecto o una pizarra libre de Agentic Bridge: columnas, tarjetas y notas en texto. Sin "board" usa el proyecto de tu sala o de tu carpeta.',
+    inputSchema: { type: 'object', properties: { board: { type: 'string', description: 'Nombre del proyecto o de la pizarra (opcional)' } } },
+  },
+  {
+    name: 'bridge_board_note',
+    description: 'Pega una nota adhesiva en la pizarra de un proyecto para que el humano y el equipo la vean: hallazgos, riesgos, decisiones, preguntas. Sin "board" usa el proyecto de tu sala o de tu carpeta.',
+    inputSchema: {
+      type: 'object',
+      properties: { text: { type: 'string', description: 'Texto de la nota (corto)' }, board: { type: 'string', description: 'Nombre del proyecto o de la pizarra (opcional)' } },
+      required: ['text'],
+    },
+  },
 ];
 
 function fmtTime(iso) { const d = new Date(iso); return isNaN(d) ? '' : String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
@@ -196,6 +210,18 @@ async function runTool(name, args) {
     const list = await call('GET', '/api/bridge/vault?' + qs({ q: args.query, limit: args.limit }));
     if (!list.length) return args.query ? 'Nada en el Baúl coincide con "' + args.query + '".' : 'El Baúl está vacío.';
     return list.map((n) => '## ' + n.title + (n.tags.length ? '  #' + n.tags.join(' #') : '') + '\n_' + (n.author || '?') + ' · ' + n.updatedAt.slice(0, 16).replace('T', ' ') + '_\n\n' + n.text + (n.attachments.length ? '\n\nAdjuntos: ' + n.attachments.join(', ') : '')).join('\n\n---\n\n');
+  }
+  if (name === 'bridge_board_read') {
+    const b = await call('GET', '/api/bridge/board?' + qs(Object.assign({ board: args.board }, await from())));
+    const parts = ['Pizarra "' + b.name + '"'];
+    if (b.frames.length) parts.push('Columnas: ' + b.frames.join(' · '));
+    parts.push(b.texts.length ? b.texts.map((t) => '- ' + t.replace(/\n/g, ' / ')).join('\n') : '(sin textos)');
+    if (b.pending.length) parts.push('Notas recién llegadas:\n' + b.pending.map((t) => '- ' + t).join('\n'));
+    return parts.join('\n\n');
+  }
+  if (name === 'bridge_board_note') {
+    const out = await call('POST', '/api/bridge/board/note', { from: await from(), board: args.board, text: args.text });
+    return 'Nota pegada en la pizarra (' + out.board + '). Aparece en cuanto alguien la tenga abierta.';
   }
   throw new Error('Herramienta desconocida: ' + name);
 }

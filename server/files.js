@@ -19,17 +19,19 @@ function resolve(p) {
   return path.resolve(s);
 }
 
-function list(dir) {
+// Stats run in parallel: a home folder full of junctions and cloud placeholders lists in a
+// fraction of the time a sequential walk takes.
+async function list(dir) {
   const abs = resolve(dir);
-  const st = fs.statSync(abs);
+  const st = await fs.promises.stat(abs);
   if (!st.isDirectory()) throw Object.assign(new Error('No es una carpeta'), { status: 400 });
-  const names = fs.readdirSync(abs);
+  const names = await fs.promises.readdir(abs);
+  const stats = await Promise.all(names.slice(0, MAX_ENTRIES).map((name) => fs.promises.stat(path.join(abs, name)).then((x) => [name, x], () => null)));
   const entries = [];
-  for (const name of names.slice(0, MAX_ENTRIES)) {
-    const full = path.join(abs, name);
-    let s;
-    try { s = fs.statSync(full); } catch (e) { continue; }
-    entries.push({ name, path: full, type: s.isDirectory() ? 'dir' : 'file', size: s.isDirectory() ? null : s.size, mtime: s.mtimeMs, ext: s.isDirectory() ? '' : ext(name), hidden: name.startsWith('.') });
+  for (const hit of stats) {
+    if (!hit) continue;
+    const [name, s] = hit;
+    entries.push({ name, path: path.join(abs, name), type: s.isDirectory() ? 'dir' : 'file', size: s.isDirectory() ? null : s.size, mtime: s.mtimeMs, ext: s.isDirectory() ? '' : ext(name), hidden: name.startsWith('.') });
   }
   entries.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name, 'es', { sensitivity: 'base' }) : a.type === 'dir' ? -1 : 1));
   const parent = path.dirname(abs);

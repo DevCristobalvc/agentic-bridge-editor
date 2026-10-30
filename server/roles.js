@@ -5,6 +5,7 @@ const COMMON = [
   'Trabajas en equipo con otros agentes y con un humano a través de Agentic Bridge.',
   'Si en la carpeta del proyecto existe CONTRATO.md, léelo antes de actuar y cúmplelo: manda sobre cualquier otra instrucción de la sala.',
   'Si existe todo.md, es el tablero del equipo: actualiza el **Status:** de tus tareas cuando empieces (in-progress), te bloquees (blocked) o termines (done).',
+  'El proyecto tiene una pizarra (Excalidraw) que el humano mira: usa bridge_board_note para dejar ahí riesgos, decisiones o preguntas cortas, y bridge_board_read para ver lo que anotaron.',
   'Sé concreto. Reporta hechos verificados, no intenciones.',
 ].join('\n');
 
@@ -12,7 +13,7 @@ const DEFAULT_ROLES = [
   {
     id: 'supervisor',
     name: 'Supervisor',
-    emoji: '🧭',
+    icon: 'compass',
     color: '#a78bfa',
     description: 'Coordina al equipo, reparte el trabajo en todo.md y verifica que cada entrega cumpla el contrato.',
     model: '',
@@ -29,8 +30,8 @@ const DEFAULT_ROLES = [
   {
     id: 'arquitecto',
     name: 'Arquitecto',
-    emoji: '🏛️',
-    color: '#818cf8',
+    icon: 'landmark',
+    color: '#8b5cf6',
     description: 'Define la arquitectura, las interfaces entre piezas y las decisiones técnicas (ADRs).',
     model: '',
     permissionMode: 'acceptEdits',
@@ -45,8 +46,8 @@ const DEFAULT_ROLES = [
   {
     id: 'desarrollador',
     name: 'Desarrollador',
-    emoji: '🛠️',
-    color: '#e879f9',
+    icon: 'hammer',
+    color: '#c4b5fd',
     description: 'Implementa las tareas asignadas con pruebas y deja el tablero al día.',
     model: '',
     permissionMode: 'acceptEdits',
@@ -61,8 +62,8 @@ const DEFAULT_ROLES = [
   {
     id: 'qa',
     name: 'QA',
-    emoji: '🔍',
-    color: '#5eead4',
+    icon: 'scan',
+    color: '#7c3aed',
     description: 'Prueba las entregas, escribe casos y reporta fallos con pasos para reproducirlos.',
     model: '',
     permissionMode: 'acceptEdits',
@@ -77,8 +78,8 @@ const DEFAULT_ROLES = [
   {
     id: 'seguridad',
     name: 'Seguridad',
-    emoji: '🛡️',
-    color: '#fbbf24',
+    icon: 'shield',
+    color: '#9d8cd9',
     description: 'Revisa secretos, permisos, dependencias y superficies de ataque antes de cada entrega.',
     model: '',
     permissionMode: 'plan',
@@ -92,8 +93,8 @@ const DEFAULT_ROLES = [
   {
     id: 'documentador',
     name: 'Documentador',
-    emoji: '📝',
-    color: '#94a3b8',
+    icon: 'pen',
+    color: '#b8a9e8',
     description: 'Mantiene README, guías y notas de versión alineadas con lo que realmente se construyó.',
     model: 'sonnet',
     permissionMode: 'acceptEdits',
@@ -106,4 +107,28 @@ const DEFAULT_ROLES = [
   },
 ];
 
-module.exports = { DEFAULT_ROLES };
+// One family of purple tones for every role, and line icons instead of emoji.
+const TONES = ['#c4b5fd', '#a78bfa', '#8b5cf6', '#7c3aed', '#6d28d9', '#9d8cd9', '#b8a9e8', '#8270c9'];
+const EMOJI_ICON = {
+  '🧭': 'compass', '🏛️': 'landmark', '🛠️': 'hammer', '🔍': 'scan', '🛡️': 'shield', '📝': 'pen', '🎨': 'palette', '📊': 'chart',
+  '⚙️': 'settings', '🚀': 'rocket', '🧪': 'flask', '🗄️': 'database', '📱': 'phone', '🌐': 'globe', '🤝': 'handshake', '🧠': 'brain', '🤖': 'bot',
+};
+
+function toneFor(color, seed) {
+  if (TONES.includes(color)) return color;
+  let h = 0;
+  for (const ch of String(seed || color || '')) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return TONES[h % TONES.length];
+}
+
+// Roles and room members saved before icons existed carry an emoji and a free color.
+function withIcon(x) {
+  if (!x || (x.icon && TONES.includes(x.color))) return x;
+  const base = DEFAULT_ROLES.find((r) => r.id === x.roleId || r.id === x.id);
+  return Object.assign({}, x, {
+    icon: x.icon || (base && base.icon) || EMOJI_ICON[x.emoji] || 'bot',
+    color: (base && base.color) || toneFor(x.color, x.id || x.name),
+  });
+}
+
+module.exports = { DEFAULT_ROLES, TONES, EMOJI_ICON, toneFor, withIcon };

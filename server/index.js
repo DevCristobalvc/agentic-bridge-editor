@@ -18,7 +18,14 @@ const connect = require('./connect');
 const agents = require('./agents');
 const claude = require('./claude');
 const vault = require('./vault');
-const { uid, clip } = require('./util');
+const shells = require('./shells');
+const antigravity = require('./antigravity');
+const secrets = require('./secrets');
+const connections = require('./connections');
+const history = require('./history');
+const boards = require('./boards');
+const { withIcon, TONES } = require('./roles');
+const { uid, clip, slug } = require('./util');
 
 const VERSION = require('../package.json').version;
 const ORIGINS = new Set(['http://127.0.0.1:' + PORT, 'http://localhost:' + PORT]);
@@ -31,7 +38,11 @@ const VENDOR = {
   'xterm.js': '@xterm/xterm/lib/xterm.js',
   'xterm.css': '@xterm/xterm/css/xterm.css',
   'addon-fit.js': '@xterm/addon-fit/lib/addon-fit.js',
+  'react.js': 'react/umd/react.production.min.js',
+  'react-dom.js': 'react-dom/umd/react-dom.production.min.js',
 };
+// Excalidraw loads its fonts and lazy chunks from EXCALIDRAW_ASSET_PATH, so its whole dist is served.
+const VENDOR_DIRS = { 'excalidraw/': path.join(ROOT, 'node_modules', '@excalidraw', 'excalidraw', 'dist') };
 // Headers for user-provided bytes served from the hub's origin: no scripts, no sniffing.
 const SAFE_RAW = {
   'X-Content-Type-Options': 'nosniff',
@@ -40,6 +51,7 @@ const SAFE_RAW = {
 const TYPES = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json',
+  '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf',
 };
 
 // ---------- defaults ----------
@@ -48,6 +60,9 @@ if (!store.prefs.get().humanName) {
   const mine = accts.find((a) => LAUNCH_CONFIG_DIR && path.resolve(a.configPath) === path.resolve(LAUNCH_CONFIG_DIR)) || accts[0];
   store.prefs.set(Object.assign({ deliverOnStop: true }, store.prefs.get(), { humanName: (mine && mine.displayName) || 'Usuario' }));
 }
+
+// Roles saved before line icons existed get one, in the purple family.
+if (store.roles.get().some((r) => !r.icon || !TONES.includes(r.color))) store.roles.set(store.roles.get().map(withIcon));
 
 // ---------- live session snapshot ----------
 let snap = { accounts: [], sessions: [] };
@@ -59,8 +74,9 @@ function signature(list) {
 
 function refresh(force) {
   const next = sessions.snapshot();
+  terminals.claimAgyConversations(next.sessions.filter((s) => s.source === 'antigravity').map((s) => s.id), antigravity.lockBirth);
   for (const s of next.sessions) {
-    const t = terminals.bySession(s.id);
+    const t = terminals.bySession(s.id) || terminals.byConversation(s.id);
     s.terminalId = t ? t.id : null;
     s.unread = rooms.inboxCount(s.id);
   }
@@ -116,8 +132,8 @@ function readBody(req, limit) {
   });
 }
 
-async function jsonBody(req) {
-  const buf = await readBody(req, 4 * 1024 * 1024);
+async function jsonBody(req, limit) {
+  const buf = await readBody(req, limit || 4 * 1024 * 1024);
   if (!buf.length) return {};
   try { return JSON.parse(buf.toString('utf8')); } catch (e) { throw fail(400, 'JSON inválido'); }
 }
@@ -192,9 +208,12 @@ function identify(q) {
   if (!sid && q.pids) sid = sessions.sessionForPids(String(q.pids).split(',').map(Number).filter(Boolean));
   if (!sid && q.sid) sid = q.sid; // a session the snapshot has not seen yet
   if (!sid) return null;
+  // Antigravity in our terminals is known first by a synthetic id, then by its real conversation.
+  if (/^agy-/.test(sid)) { const t = terminals.bySession(sid); if (t && t.conversationId) sid = t.conversationId; }
   const s = findSession(sid);
-  // Not in the registry yet (or not a Claude session): use the name a room knows it by.
-  let name = s ? s.name : null;
+  // Not in the registry yet (or not a Claude session): the terminal's name, or the one a room knows it by.
+  const term = terminals.bySession(sid);
+  let name = s ? s.name : term ? term.name : null;
   if (!name) {
     for (const r of rooms.list()) {
       const m = r.members.find((x) => x.sessionId === sid);
@@ -208,7 +227,7 @@ function authorFor(who) {
   if (who.kind === 'agent') {
     const r = rooms.raw(who.roomId);
     const m = r && r.meta.members.find((x) => x.id === who.id);
-    return { kind: 'agent', id: who.id, name: who.name, emoji: m && m.emoji, color: m && m.color, roleId: m && m.roleId };
+    return { kind: 'agent', id: who.id, name: who.name, icon: m && m.icon, color: m && m.color, roleId: m && m.roleId };
   }
   return { kind: 'session', id: who.sessionId, name: who.name };
 }
@@ -236,6 +255,11 @@ route('GET', '/api/state', () => ({
   terminals: terminals.list(),
   usage: store.usage.get(),
   vault: vault.list(),
+  shells: shells.list().map(({ id, label, icon }) => ({ id, label, icon })),
+  antigravity: { installed: antigravity.installed(), model: antigravity.settings().model || null },
+  secrets: secrets.list(),
+  connections: connections.list(),
+  boards: boards.list(),
 }));
 
 // vault
@@ -274,7 +298,8 @@ route('POST', '/api/sessions', async (req) => {
     claude.launchExternal({ name, configPath, cwd, resumeId: b.resumeId, systemPromptFile: sysFile, model: b.model, permissionMode });
     return { ok: true, external: true };
   }
-  const term = terminals.create('claude', { name, configPath, cwd, rolePrompt: prompt, roleId: b.roleId, model: b.model, permissionMode, resumeId: b.resumeId, cols: b.cols, rows: b.rows });
+  const env = await secrets.envFor(b.secretIds);
+  const term = terminals.create('claude', { name, configPath, cwd, rolePrompt: prompt, roleId: b.roleId, model: b.model, permissionMode, resumeId: b.resumeId, prompt: b.prompt, env, cols: b.cols, rows: b.rows });
   if (!b.resumeId && name) store.aliases.update((a) => Object.assign({}, a, { [term.sessionId]: name }));
   return { ok: true, terminal: term };
 });
@@ -379,13 +404,24 @@ route('POST', '/api/projects/import', async (req) => {
 route('GET', '/api/projects/:id', (req, p) => projects.detail(p.id) || Promise.reject(fail(404, 'Proyecto no encontrado')));
 route('PUT', '/api/projects/:id/contract', async (req, p) => projects.saveContract(p.id, await jsonBody(req)));
 route('POST', '/api/projects/:id/plan', async (req, p) => { const b = await jsonBody(req); return projects.plan(p.id, b.objective); });
+route('GET', '/api/projects/:id/tasks/:taskId', (req, p) => ({ text: projects.taskText(p.id, decodeURIComponent(p.taskId)) }));
+route('PATCH', '/api/projects/:id/tasks/:taskId', async (req, p) => {
+  const board = projects.updateTask(p.id, decodeURIComponent(p.taskId), await jsonBody(req));
+  refreshBoards();
+  return board;
+});
+route('POST', '/api/projects/:id/tasks', async (req, p) => {
+  const out = projects.addTask(p.id, await jsonBody(req));
+  refreshBoards();
+  return out;
+});
 route('DELETE', '/api/projects/:id', (req, p) => { projects.remove(p.id); broadcast({ type: 'projects', data: projects.list() }); return { ok: true }; });
 
 // roles
 route('GET', '/api/roles', () => store.roles.get());
 route('POST', '/api/roles', async (req) => {
   const b = await jsonBody(req);
-  const role = Object.assign({ emoji: '🤖', color: '#a78bfa', description: '', prompt: '', model: '', permissionMode: 'acceptEdits', allowedTools: [] }, b, { id: uid('role') });
+  const role = withIcon(Object.assign({ icon: 'bot', color: TONES[1], description: '', prompt: '', model: '', permissionMode: 'acceptEdits', allowedTools: [] }, b, { id: uid('role') }));
   store.roles.update((list) => list.concat([role]));
   return role;
 });
@@ -400,9 +436,97 @@ route('DELETE', '/api/roles/:id', (req, p) => { store.roles.update((list) => lis
 
 // terminals
 route('GET', '/api/terminals', () => terminals.list());
+route('GET', '/api/shells', () => shells.list().map(({ id, label, icon }) => ({ id, label, icon })));
 route('POST', '/api/terminals', async (req) => {
   const b = await jsonBody(req);
-  return terminals.create('shell', { name: b.name || 'PowerShell', cwd: b.cwd ? files.resolve(b.cwd) : HOME, cols: b.cols, rows: b.rows });
+  const env = await secrets.envFor(b.secretIds);
+  return terminals.create('shell', { name: b.name, shell: b.shell, cwd: b.cwd ? files.resolve(b.cwd) : HOME, env, cols: b.cols, rows: b.rows });
+});
+route('PATCH', '/api/terminals/:id', async (req, p) => terminals.rename(p.id, (await jsonBody(req)).name) || Promise.reject(fail(404, 'Terminal no encontrada')));
+
+// Antigravity
+let agyModels = null;
+route('GET', '/api/agy', async () => {
+  if (!agyModels && antigravity.installed()) agyModels = await antigravity.models().catch(() => []);
+  return { installed: antigravity.installed(), model: antigravity.settings().model || null, models: agyModels || [], conversations: antigravity.conversations().length, readable: antigravity.available() };
+});
+route('POST', '/api/agy/sessions', async (req) => {
+  const b = await jsonBody(req);
+  const cwd = b.cwd ? files.resolve(b.cwd) : HOME;
+  if (!fs.existsSync(cwd)) fs.mkdirSync(cwd, { recursive: true });
+  const mode = ['accept-edits', 'auto', 'plan'].includes(b.mode) ? b.mode : null;
+  const env = await secrets.envFor(b.secretIds);
+  const term = terminals.create('agy', { name: String(b.name || 'antigravity').trim().slice(0, 60), cwd, model: b.model || null, mode, skipPermissions: !!b.skipPermissions, conversationId: b.conversationId || null, prompt: b.prompt, env, cols: b.cols, rows: b.rows });
+  return { ok: true, terminal: term };
+});
+
+// credentials (encrypted; values only leave on an explicit reveal or into a terminal's env)
+route('GET', '/api/secrets', () => secrets.list());
+route('POST', '/api/secrets', async (req) => secrets.save(await jsonBody(req)));
+route('PUT', '/api/secrets/:id', async (req, p) => secrets.save(Object.assign(await jsonBody(req), { id: p.id })));
+route('DELETE', '/api/secrets/:id', (req, p) => ({ ok: secrets.remove(p.id) }));
+route('POST', '/api/secrets/:id/reveal', (req, p) => secrets.reveal(p.id));
+
+// external accounts (GitHub, Vercel, Azure…), read from their own CLIs
+route('GET', '/api/connections', () => { if (connections.stale()) connections.refresh().catch(() => {}); return connections.list(); });
+route('POST', '/api/connections/refresh', async (req) => connections.refresh((await jsonBody(req)).id || null));
+route('POST', '/api/connections/:id/:action', async (req, p) => {
+  const prov = connections.find(p.id);
+  const cmd = p.action === 'login' ? prov.login : p.action === 'logout' ? prov.logout : null;
+  if (!cmd) throw fail(400, 'Acción no disponible para ' + prov.name);
+  const term = terminals.create('shell', { name: prov.name + (p.action === 'login' ? ' · iniciar sesión' : ' · cerrar sesión'), shell: 'powershell', cwd: HOME, command: cmd });
+  return { ok: true, terminal: term };
+});
+route('GET', '/api/connections-azure/subscriptions', () => connections.azureSubscriptions());
+route('POST', '/api/connections-azure/subscription', async (req) => connections.azureUse((await jsonBody(req)).id));
+route('POST', '/api/connections-github/switch', async (req) => connections.githubSwitch((await jsonBody(req)).user));
+route('PUT', '/api/connections-git/identity', async (req) => connections.gitIdentity(await jsonBody(req)));
+
+// a new Claude account: its own config dir, signed in from an integrated terminal
+route('POST', '/api/claude-accounts', async (req) => {
+  const b = await jsonBody(req);
+  const name = slug(b.name || '').replace(/^claude-?/, '');
+  if (!name || name === 'sin-nombre') throw fail(400, 'Ponle un nombre a la cuenta, p. ej. "personal"');
+  const dir = path.join(HOME, '.claude-' + name);
+  if (fs.existsSync(dir)) throw fail(409, 'Ya existe ' + dir);
+  fs.mkdirSync(path.join(dir, 'sessions'), { recursive: true });
+  const term = terminals.create('claude', { name: 'login-' + name, configPath: dir, cwd: HOME });
+  refresh(true);
+  return { ok: true, configDir: path.basename(dir), terminal: term };
+});
+
+// history & statistics
+route('GET', '/api/history', (req, p, url) => {
+  history.ensureFresh(20000);
+  const q = Object.fromEntries(url.searchParams);
+  return { indexing: history.progress(), conversations: history.conversations({ q: q.q, source: q.source, configDir: q.configDir, cwd: q.cwd, all: q.all === '1' }) };
+});
+route('GET', '/api/history-search', (req, p, url) => history.search(url.searchParams.get('q'), { limit: 40 }));
+route('GET', '/api/history/:id', (req, p, url) => history.transcript(p.id, { source: url.searchParams.get('source'), limit: Number(url.searchParams.get('limit')) || 4000 }));
+route('GET', '/api/stats', (req, p, url) => {
+  history.ensureFresh(20000);
+  const q = Object.fromEntries(url.searchParams);
+  return Object.assign(history.stats({ days: q.days, configDir: q.configDir, cwd: q.cwd }), { usageHistory: sessions.usageHistory(Math.min(30, Number(q.days) || 7)) });
+});
+
+// whiteboards
+const boardRef = (p) => decodeURIComponent(p.ref);
+route('GET', '/api/boards', () => boards.list());
+route('POST', '/api/boards', async (req) => { const out = boards.create((await jsonBody(req)).name); broadcast({ type: 'boards', data: boards.list() }); return out; });
+route('GET', '/api/boards/:ref', (req, p) => boards.read(boardRef(p)));
+route('PUT', '/api/boards/:ref', async (req, p) => {
+  const b = await jsonBody(req, 40 * 1024 * 1024);
+  const out = boards.write(boardRef(p), b.scene);
+  broadcast({ type: 'board', data: { ref: out.ref, updatedAt: out.updatedAt, clientId: b.clientId || null } });
+  return out;
+});
+route('PATCH', '/api/boards/:ref', async (req, p) => { const out = boards.rename(boardRef(p), (await jsonBody(req)).name); broadcast({ type: 'boards', data: boards.list() }); return out; });
+route('DELETE', '/api/boards/:ref', (req, p) => { boards.remove(boardRef(p)); broadcast({ type: 'boards', data: boards.list() }); return { ok: true }; });
+route('POST', '/api/boards/:ref/notes', async (req, p) => {
+  const b = await jsonBody(req);
+  const note = boards.addNote(boardRef(p), { text: b.text, author: store.prefs.get().humanName || 'Tú', tone: b.tone });
+  broadcast({ type: 'board', data: { ref: boardRef(p), updatedAt: Date.now(), clientId: null } });
+  return note;
 });
 route('DELETE', '/api/terminals/:id', (req, p) => ({ ok: terminals.kill(p.id) }));
 
@@ -466,6 +590,32 @@ route('POST', '/api/bridge/vault', async (req) => {
 });
 route('GET', '/api/bridge/vault', (req, p, url) => vault.search(url.searchParams.get('q'), Math.min(50, Number(url.searchParams.get('limit')) || 10))
   .map((n) => ({ id: n.id, title: n.title, tags: n.tags, author: n.author && n.author.name, updatedAt: new Date(n.updatedAt).toISOString(), text: clip(n.text, 4000), attachments: (n.attachments || []).map((a) => a.path) })));
+function boardForAgent(ref, who) {
+  const r = String(ref || '').trim().toLowerCase();
+  const list = projects.list();
+  let proj = r ? list.find((x) => x.id === ref || x.name.toLowerCase() === r || x.slug === r) : null;
+  if (!proj && who && who.kind === 'agent') {
+    const room = rooms.raw(who.roomId);
+    proj = room && room.meta.projectId ? list.find((x) => x.id === room.meta.projectId) : null;
+  }
+  if (!proj && who && who.cwd) proj = list.find((x) => who.cwd.toLowerCase().startsWith(x.path.toLowerCase()));
+  if (proj) return 'p:' + proj.id;
+  const free = boards.list().find((x) => x.kind === 'free' && x.name.toLowerCase() === r);
+  if (free) return free.ref;
+  throw fail(404, r ? 'No encontré la pizarra o el proyecto "' + ref + '"' : 'Indica el proyecto o la pizarra (board).');
+}
+route('GET', '/api/bridge/board', (req, p, url) => {
+  const q = Object.fromEntries(url.searchParams);
+  return boards.textOf(boardForAgent(q.board, identify(q)));
+});
+route('POST', '/api/bridge/board/note', async (req) => {
+  const b = await jsonBody(req);
+  const who = identify(b.from || {});
+  const ref = boardForAgent(b.board, who);
+  const note = boards.addNote(ref, { text: b.text, author: who ? who.name : String(b.as || 'agente').slice(0, 60) });
+  broadcast({ type: 'board', data: { ref, updatedAt: Date.now(), clientId: null } });
+  return { ok: true, board: ref, id: note.id };
+});
 route('POST', '/api/bridge/join', async (req) => {
   const b = await jsonBody(req);
   const who = identify(b.from || {});
@@ -484,8 +634,14 @@ function serveStatic(req, res, pathname) {
   }
   let file = null;
   if (pathname.startsWith('/vendor/')) {
-    const rel = VENDOR[pathname.slice(8)];
+    const name = pathname.slice(8);
+    const rel = VENDOR[name];
     if (rel) file = path.join(ROOT, 'node_modules', rel);
+    for (const [prefix, dir] of Object.entries(VENDOR_DIRS)) {
+      if (!name.startsWith(prefix)) continue;
+      const abs = path.resolve(dir, '.' + path.sep + decodeURIComponent(name.slice(prefix.length)));
+      if (abs.startsWith(dir + path.sep)) file = abs;
+    }
   } else {
     const abs = path.resolve(WEB_DIR, '.' + decodeURIComponent(pathname));
     if (abs.startsWith(WEB_DIR + path.sep)) file = abs;
@@ -493,7 +649,8 @@ function serveStatic(req, res, pathname) {
   if (!file) return send(res, 404, 'text/plain', 'not found');
   fs.readFile(file, (err, buf) => {
     if (err) return send(res, 404, 'text/plain', 'not found');
-    send(res, 200, TYPES[path.extname(file)] || 'application/octet-stream', buf);
+    const extra = pathname.startsWith('/vendor/') ? { 'Cache-Control': 'public, max-age=86400' } : undefined;
+    send(res, 200, TYPES[path.extname(file)] || 'application/octet-stream', buf, extra);
   });
 }
 
@@ -556,6 +713,8 @@ server.on('error', (e) => {
 
 rooms.load();
 refresh(true);
+setTimeout(() => history.scan().catch((e) => console.error('[history]', e.message)), 1500);
+setInterval(() => history.ensureFresh(60000), 60000);
 refreshBoards();
 setInterval(() => { try { refresh(false); refreshBoards(); } catch (e) { console.error('[refresh]', e.message); } }, 2500);
 

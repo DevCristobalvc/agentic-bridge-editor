@@ -39,6 +39,7 @@ export function FolderPicker({ value, onChange }) {
   const [error, setError] = useState(null);
   const projects = useStore((s) => s.projects);
   const sessions = useStore((s) => s.sessions);
+  const favorites = useStore((s) => s.prefs.favorites) || [];
   const home = useStore((s) => s.me && s.me.home);
 
   useEffect(() => {
@@ -50,6 +51,7 @@ export function FolderPicker({ value, onChange }) {
   const go = (p) => api.get('/api/fs/list?path=' + encodeURIComponent(p)).then((d) => { setDir(d); setError(null); }).catch((e) => setError(e.message));
   const quick = [];
   const seen = new Set();
+  for (const f of favorites) if (!seen.has(f.path)) { seen.add(f.path); quick.push({ label: f.label, path: f.path, icon: 'star' }); }
   for (const p of projects) if (!seen.has(p.path)) { seen.add(p.path); quick.push({ label: p.name, path: p.path, icon: 'kanban' }); }
   for (const s of sessions) if (s.alive && s.cwd && !seen.has(s.cwd)) { seen.add(s.cwd); quick.push({ label: shortPath(s.cwd), path: s.cwd, icon: 'terminal' }); }
 
@@ -58,7 +60,7 @@ export function FolderPicker({ value, onChange }) {
       <div class="with-icon grow"><${Icon} name="folder" /><input class="input mono" style="font-size:12.5px" value=${value} placeholder="Carpeta de trabajo" onInput=${(e) => onChange(e.target.value)} /></div>
       <${Btn} icon="folder-open" onClick=${() => setOpen(!open)}>${open ? 'Cerrar' : 'Explorar'}<//>
     </div>
-    ${quick.length && !open ? html`<div class="row wrap">${quick.slice(0, 6).map((q) => html`<button type="button" class="chip" style="cursor:pointer" onClick=${() => onChange(q.path)}><${Icon} name=${q.icon} />${q.label}</button>`)}</div>` : null}
+    ${quick.length && !open ? html`<div class="row wrap">${quick.slice(0, 8).map((q) => html`<button type="button" class="chip" style="cursor:pointer" onClick=${() => onChange(q.path)}><${Icon} name=${q.icon} />${q.label}</button>`)}</div>` : null}
     ${open && dir ? html`<div class="card" style="max-height:260px;display:flex;flex-direction:column">
       <div class="row" style="padding:8px 10px;border-bottom:1px solid var(--line)">
         <${IconBtn} icon="arrow-up" size="sm" title="Subir" disabled=${!dir.parent} onClick=${() => go(dir.parent)} />
@@ -73,77 +75,169 @@ export function FolderPicker({ value, onChange }) {
   </div>`;
 }
 
-// ---------- new session ----------
+// ---------- credentials as environment variables ----------
+export function SecretPicker({ value, onChange }) {
+  const secrets = useStore((s) => s.secrets);
+  if (!secrets.length) return html`<div class="muted" style="font-size:12.5px">No tienes credenciales guardadas. <a href="#/accounts">Agrégalas en Cuentas</a> y podrás pasarlas a cualquier terminal.</div>`;
+  return html`<div class="row wrap" style="gap:6px">${secrets.map((x) => {
+    const on = value.includes(x.id);
+    return html`<button type="button" class=${'tag-check' + (on ? ' on' : '')} title=${x.service || x.name} onClick=${() => onChange(on ? value.filter((v) => v !== x.id) : value.concat([x.id]))}>
+      <${Icon} name=${on ? 'check' : 'key'} /><span class="mono">${x.name}</span></button>`;
+  })}</div>`;
+}
+
+// ---------- new session (Claude Code or Antigravity) ----------
 export function newSession(preset) { openModal(() => html`<${NewSession} preset=${preset || {}} />`); }
+
+let agyInfo = null;
+function useAgy() {
+  const [info, setInfo] = useState(agyInfo);
+  useEffect(() => { if (!agyInfo) api.get('/api/agy').then((d) => { agyInfo = d; setInfo(d); }).catch(() => setInfo({ installed: false, models: [] })); }, []);
+  return info;
+}
+
+const AGY_MODES = [
+  { value: 'accept-edits', label: 'Acepta ediciones' },
+  { value: '', label: 'Pregunta antes de actuar' },
+  { value: 'plan', label: 'Solo planifica' },
+  { value: 'auto', label: 'Automático' },
+];
 
 function NewSession({ preset }) {
   const roles = useStore((s) => s.roles);
   const me = useStore((s) => s.me);
+  const agyState = useStore((s) => s.antigravity);
+  const agy = useAgy();
   const [defAccount, setLastAccount] = useDefaultAccount();
+  const [agent, setAgent] = useLocal('sessionAgent', 'claude');
   const [name, setName] = useState(preset.name || '');
   const [configDir, setConfigDir] = useState(preset.configDir || defAccount);
   const [cwd, setCwd] = useState(preset.cwd || (me && me.home) || '');
   const [roleId, setRoleId] = useState(preset.roleId || '');
   const [model, setModel] = useState('');
+  const [agyModel, setAgyModel] = useState('');
   const [permissionMode, setPermissionMode] = useLocal('sessionPermission', 'acceptEdits');
+  const [agyMode, setAgyMode] = useLocal('agyMode', 'accept-edits');
   const [where, setWhere] = useState(me && me.pty ? 'pty' : 'external');
+  const [secretIds, setSecretIds] = useState([]);
+  const [prompt, setPrompt] = useState(preset.prompt || '');
   const [busy, setBusy] = useState(false);
+  const agyInstalled = !!(agyState && agyState.installed);
+  const kind = preset.agent || (agent === 'agy' && agyInstalled ? 'agy' : 'claude');
 
   const submit = async (e) => {
     e && e.preventDefault();
     setBusy(true);
-    const role = roles.find((r) => r.id === roleId);
-    const res = await attempt(() => api.post('/api/sessions', { name: name.trim() || (role ? role.name.toLowerCase() : 'sesion'), configDir, cwd, roleId: roleId || null, model, permissionMode, where }));
+    let res;
+    if (kind === 'agy') {
+      res = await attempt(() => api.post('/api/agy/sessions', { name: name.trim() || 'antigravity', cwd, model: agyModel, mode: agyMode, secretIds, prompt: prompt.trim() || undefined }));
+    } else {
+      const role = roles.find((r) => r.id === roleId);
+      res = await attempt(() => api.post('/api/sessions', { name: name.trim() || (role ? role.name.toLowerCase() : 'sesion'), configDir, cwd, roleId: roleId || null, model, permissionMode, where, secretIds, prompt: prompt.trim() || undefined }));
+      if (res) setLastAccount(configDir);
+    }
     setBusy(false);
     if (!res) return;
-    setLastAccount(configDir);
     closeModal();
-    if (res.terminal) { toast('Sesión creada en una terminal integrada'); navigate('/terminals/' + res.terminal.id); }
+    if (res.terminal) { toast(kind === 'agy' ? 'Sesión de Antigravity abierta' : 'Sesión creada en una terminal integrada'); navigate('/terminals/' + res.terminal.id); }
     else toast('Sesión abierta en Windows Terminal');
   };
 
-  return html`<${Modal} title="Nueva sesión" subtitle="Una sesión de Claude Code real, con tu cockpit, en la cuenta que elijas."
-    footer=${html`<span class="left">${where === 'pty' ? 'Vive dentro del editor mientras Bridge esté abierto.' : 'Se abre en una pestaña nueva de Windows Terminal.'}</span>
+  const pick = (v) => { if (!preset.agent) setAgent(v); };
+  return html`<${Modal} title="Nueva sesión" subtitle="Un agente de verdad en tu carpeta, con su terminal, que Bridge puede ver y despertar."
+    footer=${html`<span class="left">${kind === 'agy' ? 'Antigravity CLI en una terminal integrada.' : where === 'pty' ? 'Vive dentro del editor mientras Bridge esté abierto.' : 'Se abre en una pestaña nueva de Windows Terminal.'}</span>
       <${Btn} kind="ghost" onClick=${closeModal}>Cancelar<//><${Btn} kind="primary" icon="play" busy=${busy} onClick=${submit}>Crear sesión<//>`}>
     <form onSubmit=${submit} class="col" style="gap:14px">
+      <div class="agent-switch" role="radiogroup" aria-label="Agente">
+        <button type="button" role="radio" aria-checked=${kind === 'claude'} class=${kind === 'claude' ? 'on' : ''} onClick=${() => pick('claude')}>
+          <span class="ic"><${Icon} name="sparkles" /></span><span><b>Claude Code</b><small>En cualquiera de tus cuentas</small></span></button>
+        <button type="button" role="radio" aria-checked=${kind === 'agy'} class=${kind === 'agy' ? 'on' : ''} disabled=${!agyInstalled} onClick=${() => pick('agy')} title=${agyInstalled ? '' : 'No encontré el CLI de Antigravity (agy)'}>
+          <span class="ic"><${Icon} name="orbit" /></span><span><b>Antigravity</b><small>${agyInstalled ? (agyState.model || 'agy CLI') : 'No instalado'}</small></span></button>
+      </div>
       <div class="grid-2">
-        <${Field} label="Nombre" hint="Así la verán los demás agentes (@nombre).">
+        <${Field} label="Nombre" hint=${kind === 'agy' ? 'Nombre de la pestaña en Bridge.' : 'Así la verán los demás agentes (@nombre).'}>
           <input class="input" autofocus value=${name} placeholder="p. ej. back-api" onInput=${(e) => setName(e.target.value)} />
         <//>
-        <${Field} label="Cuenta"><${AccountSelect} value=${configDir} onChange=${setConfigDir} /><//>
+        ${kind === 'claude'
+          ? html`<${Field} label="Cuenta"><${AccountSelect} value=${configDir} onChange=${setConfigDir} /><//>`
+          : html`<${Field} label="Modelo"><select class="select" value=${agyModel} onChange=${(e) => setAgyModel(e.target.value)}>
+              <option value="">El de tus ajustes${agyState && agyState.model ? ' (' + agyState.model + ')' : ''}</option>
+              ${((agy && agy.models) || []).map((m) => html`<option value=${m.value}>${m.label}</option>`)}
+            </select><//>`}
       </div>
       <${Field} label="Carpeta de trabajo"><${FolderPicker} value=${cwd} onChange=${setCwd} /><//>
-      <div class="grid-2">
-        <${Field} label="Rol" hint="Se agrega al system prompt de la sesión.">
-          <select class="select" value=${roleId} onChange=${(e) => setRoleId(e.target.value)}>
-            <option value="">Sin rol</option>
-            ${roles.map((r) => html`<option value=${r.id}>${r.emoji} ${r.name}</option>`)}
-          </select>
-        <//>
-        <${Field} label="Modelo">
-          <select class="select" value=${model} onChange=${(e) => setModel(e.target.value)}>${MODELS.map((m) => html`<option value=${m.value}>${m.label}</option>`)}</select>
-        <//>
-      </div>
-      <div class="grid-2">
-        <${Field} label="Permisos" hint="Las guardas del contrato aplican en cualquier modo.">
-          <select class="select" value=${permissionMode} onChange=${(e) => setPermissionMode(e.target.value)}>
-            <option value="default">Pregunta antes de actuar</option>
-            <option value="acceptEdits">Acepta ediciones</option>
-            <option value="plan">Solo planifica</option>
-            <option value="bypassPermissions">Sin preguntas</option>
-          </select>
-        <//>
-        <${Field} label="Dónde se abre">
-          <${Seg} value=${where} onChange=${setWhere} options=${[
-            { value: 'pty', label: 'Integrada', icon: 'terminal' },
-            { value: 'external', label: 'Windows Terminal', icon: 'external' },
-          ].filter((o) => o.value !== 'pty' || (me && me.pty))} />
-        <//>
-      </div>
-      <div class="hint muted" style="font-size:12px">La primera vez en una carpeta, Claude pregunta si confías en ella: respóndelo en la terminal.</div>
+      ${kind === 'claude' ? html`
+        <div class="grid-2">
+          <${Field} label="Rol" hint="Se agrega al system prompt de la sesión.">
+            <select class="select" value=${roleId} onChange=${(e) => setRoleId(e.target.value)}>
+              <option value="">Sin rol</option>
+              ${roles.map((r) => html`<option value=${r.id}>${r.name}</option>`)}
+            </select>
+          <//>
+          <${Field} label="Modelo">
+            <select class="select" value=${model} onChange=${(e) => setModel(e.target.value)}>${MODELS.map((m) => html`<option value=${m.value}>${m.label}</option>`)}</select>
+          <//>
+        </div>
+        <div class="grid-2">
+          <${Field} label="Permisos" hint="Las guardas del contrato aplican en cualquier modo.">
+            <select class="select" value=${permissionMode} onChange=${(e) => setPermissionMode(e.target.value)}>
+              <option value="default">Pregunta antes de actuar</option>
+              <option value="acceptEdits">Acepta ediciones</option>
+              <option value="plan">Solo planifica</option>
+              <option value="bypassPermissions">Sin preguntas</option>
+            </select>
+          <//>
+          <${Field} label="Dónde se abre">
+            <${Seg} value=${where} onChange=${setWhere} options=${[
+              { value: 'pty', label: 'Integrada', icon: 'terminal' },
+              { value: 'external', label: 'Windows Terminal', icon: 'external' },
+            ].filter((o) => o.value !== 'pty' || (me && me.pty))} />
+          <//>
+        </div>` : html`
+        <${Field} label="Permisos">
+          <select class="select" value=${agyMode} onChange=${(e) => setAgyMode(e.target.value)}>${AGY_MODES.map((m) => html`<option value=${m.value}>${m.label}</option>`)}</select>
+        <//>`}
+      ${kind === 'agy' || where === 'pty' ? html`<${Field} label="Credenciales como variables de entorno" hint="Se descifran solo para esta terminal; nunca pasan por las salas ni por el MCP.">
+        <${SecretPicker} value=${secretIds} onChange=${setSecretIds} />
+      <//>` : null}
+      ${kind === 'agy' || where === 'pty' ? html`<${Field} label="Primera instrucción (opcional)" hint="La sesión arranca trabajando en esto.">
+        <textarea class="textarea" rows="2" value=${prompt} placeholder="p. ej. Revisa el README y propón mejoras" onInput=${(e) => setPrompt(e.target.value)}></textarea>
+      <//>` : null}
+      ${kind === 'claude' ? html`<div class="hint muted" style="font-size:12px">La primera vez en una carpeta, Claude pregunta si confías en ella: respóndelo en la terminal.</div>` : null}
     </form>
   <//>`;
 }
+
+// ---------- new terminal (PowerShell, Git Bash, CMD, WSL) ----------
+export function newTerminal(preset) { openModal(() => html`<${NewTerminal} preset=${preset || {}} />`); }
+
+function NewTerminal({ preset }) {
+  const shells = useStore((s) => s.shells);
+  const me = useStore((s) => s.me);
+  const [shell, setShell] = useLocal('lastShell', 'powershell');
+  const [cwd, setCwd] = useState(preset.cwd || (me && me.home) || '');
+  const [name, setName] = useState('');
+  const [secretIds, setSecretIds] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const chosen = shells.find((x) => x.id === (preset.shell || shell)) || shells[0];
+  const submit = async (e) => {
+    e && e.preventDefault();
+    setBusy(true);
+    const t = await attempt(() => api.post('/api/terminals', { shell: chosen && chosen.id, cwd, name: name.trim() || undefined, secretIds }));
+    setBusy(false);
+    if (t) { closeModal(); navigate('/terminals/' + t.id); }
+  };
+  return html`<${Modal} title="Nueva terminal" subtitle="Una consola dentro del editor, en la carpeta que elijas."
+    footer=${html`<span class="left"></span><${Btn} kind="ghost" onClick=${closeModal}>Cancelar<//><${Btn} kind="primary" icon="terminal" busy=${busy} onClick=${submit}>Abrir<//>`}>
+    <form onSubmit=${submit} class="col" style="gap:14px">
+      <${Field} label="Consola"><div class="row wrap" style="gap:6px">${shells.map((x) => html`<button type="button" class=${'tag-check' + (chosen && chosen.id === x.id ? ' on' : '')} onClick=${() => setShell(x.id)}><${Icon} name=${x.icon} />${x.label}</button>`)}</div><//>
+      <${Field} label="Nombre (opcional)"><input class="input" value=${name} placeholder=${chosen ? chosen.label : ''} onInput=${(e) => setName(e.target.value)} /><//>
+      <${Field} label="Carpeta"><${FolderPicker} value=${cwd} onChange=${setCwd} /><//>
+      <${Field} label="Credenciales como variables de entorno"><${SecretPicker} value=${secretIds} onChange=${setSecretIds} /><//>
+    </form>
+  <//>`;
+}
+
 
 // ---------- team builder (rooms & projects) ----------
 export function TeamPicker({ team, setTeam, configDir }) {
@@ -157,7 +251,7 @@ export function TeamPicker({ team, setTeam, configDir }) {
     ${roles.map((r) => {
       const n = count(r.id);
       return html`<div class=${'role-pick' + (n ? ' on' : '')}>
-        <${Avatar} emoji=${r.emoji} color=${r.color} size="sm" />
+        <${Avatar} icon=${r.icon} emoji=${r.emoji} color=${r.color} size="sm" />
         <div class="grow"><div class="n">${r.name}</div><div class="s ellipsis" title=${r.description}>${r.description}</div></div>
         <div class="stepper">
           <button type="button" onClick=${() => setCount(r.id, Math.max(0, n - 1))} aria-label="Menos">−</button>
@@ -195,7 +289,7 @@ function NewRoom({ preset }) {
   const [team, setTeam] = useState(preset.team || [{ roleId: 'supervisor', count: 1, configDir: defAccount }]);
   const [picked, setPicked] = useState(preset.sessionIds || []);
   const [busy, setBusy] = useState(false);
-  const live = sessions.filter((s) => s.alive && s.source === 'claude');
+  const live = sessions.filter((s) => s.alive);
 
   const submit = async () => {
     if (!name.trim()) { toast('Ponle un nombre a la sala', 'bad'); return; }
@@ -252,7 +346,7 @@ function AddMember({ room }) {
   const [cwd, setCwd] = useState(firstAgent ? firstAgent.cwd : (getState().me || {}).home);
   const [model, setModel] = useState('');
   const [permissionMode, setPermissionMode] = useState('');
-  const live = sessions.filter((s) => s.alive && s.source === 'claude' && !room.members.some((m) => m.sessionId === s.id));
+  const live = sessions.filter((s) => s.alive && !room.members.some((m) => m.sessionId === s.id));
 
   const addAgent = async () => {
     const role = roles.find((r) => r.id === roleId);
@@ -268,7 +362,7 @@ function AddMember({ room }) {
     <${Seg} value=${tab} onChange=${setTab} options=${[{ value: 'agent', label: 'Agente con rol', icon: 'bot' }, { value: 'session', label: 'Sesión en vivo', icon: 'sessions', count: live.length }]} />
     ${tab === 'agent' ? html`
       <div class="grid-2">
-        <${Field} label="Rol"><select class="select" value=${roleId} onChange=${(e) => setRoleId(e.target.value)}>${roles.map((r) => html`<option value=${r.id}>${r.emoji} ${r.name}</option>`)}</select><//>
+        <${Field} label="Rol"><select class="select" value=${roleId} onChange=${(e) => setRoleId(e.target.value)}>${roles.map((r) => html`<option value=${r.id}>${r.name}</option>`)}</select><//>
         <${Field} label="Nombre (opcional)"><input class="input" value=${name} placeholder="Se usa el del rol" onInput=${(e) => setName(e.target.value)} /><//>
       </div>
       <div class="grid-2">

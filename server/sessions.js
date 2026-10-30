@@ -8,6 +8,8 @@ const path = require('path');
 const { HOME, CREW_DIR, AGY_DIR } = require('./config');
 const { readJson, memoByFile, clip, readTail } = require('./util');
 const store = require('./store');
+const antigravity = require('./antigravity');
+const { DATA_DIR } = require('./config');
 
 const CREW_STALE_MS = 5 * 60 * 1000; // same threshold as the cockpit statusline
 const TAIL_BYTES = 256 * 1024;
@@ -136,6 +138,9 @@ function tokenStats(file) {
         if (!c.firstAt && o.timestamp) c.firstAt = o.timestamp;
         const m = o.message;
         if (!m || !m.usage) continue;
+        // One API message is written as one line per content block, all with the same usage.
+        if (m.id && m.id === c.lastId) continue;
+        c.lastId = m.id || null;
         c.in += m.usage.input_tokens || 0;
         c.out += m.usage.output_tokens || 0;
         c.cr += m.usage.cache_read_input_tokens || 0;
@@ -266,6 +271,33 @@ function recordUsage(configDir, raw, source) {
   const prev = store.usage.get()[configDir];
   if (prev && prev.at > n.at - 15000 && JSON.stringify(prev.five_hour) === JSON.stringify(n.five_hour)) return;
   store.usage.update((u) => Object.assign({}, u, { [configDir]: n }));
+  // Keep a time series for the subscription charts; one point per change is enough.
+  const pct = (w) => (w ? Math.round(w.pct * 10) / 10 : null);
+  if (!prev || pct(prev.five_hour) !== pct(n.five_hour) || pct(prev.seven_day) !== pct(n.seven_day)) {
+    try { fs.appendFileSync(USAGE_LOG, JSON.stringify({ at: n.at, dir: configDir, h5: pct(n.five_hour), d7: pct(n.seven_day) }) + '\n'); } catch (e) {}
+  }
+}
+
+const USAGE_LOG = path.join(DATA_DIR, 'usage-history.jsonl');
+
+// The last `days` of subscription points, per config dir.
+function usageHistory(days) {
+  const since = Date.now() - (days || 7) * 86400000;
+  const out = {};
+  let lines = [];
+  try { lines = fs.readFileSync(USAGE_LOG, 'utf8').split('\n'); } catch (e) { return out; }
+  if (lines.length > 20000) {
+    lines = lines.slice(-10000);
+    try { fs.writeFileSync(USAGE_LOG, lines.join('\n')); } catch (e) {}
+  }
+  for (const l of lines) {
+    if (!l) continue;
+    let o;
+    try { o = JSON.parse(l); } catch (e) { continue; }
+    if (o.at < since) continue;
+    (out[o.dir] = out[o.dir] || []).push({ at: o.at, h5: o.h5, d7: o.d7 });
+  }
+  return out;
 }
 
 // ---------- snapshot ----------
@@ -321,6 +353,40 @@ function snapshot() {
     }
   }
 
+  // Antigravity conversations whose agy process is running (it holds the presence lock).
+  const agySettings = antigravity.settings();
+  const summaries = new Map(antigravity.conversations().map((c) => [c.id, c]));
+  for (const id of antigravity.liveIds()) {
+    const c = summaries.get(id) || { id, title: '', workspaces: [], status: '', updatedAt: null };
+    const cr = crew.get(id);
+    crew.delete(id);
+    sessions.push({
+      id,
+      name: aliasMap[id] || (cr && cr.name) || c.title || 'antigravity ' + id.slice(0, 4),
+      registryName: c.title || null,
+      alias: aliasMap[id] || null,
+      source: 'antigravity',
+      kind: null,
+      configDir: null,
+      configPath: null,
+      account: 'Antigravity',
+      pid: null,
+      alive: true,
+      status: /running|busy|active/.test(c.status) ? 'busy' : 'idle',
+      cwd: c.workspaces[0] || (cr && cr.cwd) || null,
+      version: null,
+      startedAt: antigravity.lockBirth(id) || null,
+      updatedAt: Math.max(c.updatedAt || 0, (cr && cr.updated_at) || 0) || null,
+      crew: crewView(cr, now),
+      model: (cr && cr.model) || agySettings.model || null,
+      ctxPct: cr && typeof cr.ctx_pct === 'number' ? cr.ctx_pct : null,
+      cost: null,
+      tokens: null,
+      steps: c.steps || null,
+      last: c.preview ? { user: { text: c.preview, at: c.lastInputAt ? new Date(c.lastInputAt).toISOString() : null }, assistant: null } : null,
+    });
+  }
+
   // Board entries with no registry file: Antigravity, or Claude sessions that have exited
   // (Claude removes its registry file on exit, so those are closed for certain).
   for (const [sid, c] of crew) {
@@ -366,4 +432,4 @@ function sessionForPids(list) {
   return null;
 }
 
-module.exports = { accounts, configDirs, snapshot, transcript, sessionForPids, recordUsage, findTranscriptAnywhere };
+module.exports = { accounts, configDirs, snapshot, transcript, sessionForPids, recordUsage, usageHistory, findTranscriptAnywhere };

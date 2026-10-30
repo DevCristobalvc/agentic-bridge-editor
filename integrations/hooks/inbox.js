@@ -58,7 +58,7 @@ function fmt(m) {
   } catch (e) { return; }
   if (!messages.length) return;
 
-  const body = '📨 Mensajes nuevos de Agentic Bridge (' + messages.length + '):\n\n' + messages.map(fmt).join('\n\n');
+  const body = 'Mensajes nuevos de Agentic Bridge (' + messages.length + '):\n\n' + messages.map(fmt).join('\n\n');
   if (event === 'Stop') {
     emit({
       decision: 'block',

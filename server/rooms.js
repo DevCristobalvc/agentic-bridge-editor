@@ -11,6 +11,7 @@ const { readJson, writeJson, uid, uuid, slug, clip } = require('./util');
 const store = require('./store');
 const agents = require('./agents');
 const terminals = require('./terminals');
+const { withIcon } = require('./roles');
 
 const ROOMS_DIR = path.join(DATA_DIR, 'rooms');
 const INBOX_DIR = path.join(DATA_DIR, 'inbox');
@@ -41,6 +42,7 @@ function load() {
   for (const f of files) {
     const meta = readJson(path.join(ROOMS_DIR, f));
     if (!meta || !meta.id) continue;
+    meta.members = (meta.members || []).map((m) => (m.kind === 'agent' ? withIcon(m) : m));
     let messages = [];
     try {
       messages = fs.readFileSync(logFile(meta.id), 'utf8').split('\n').filter(Boolean)
@@ -118,7 +120,7 @@ function makeMember(room, spec) {
     name,
     handle: uniqueHandle(room, name),
     roleId: role.id || null,
-    emoji: role.emoji || '🤖',
+    icon: role.icon || 'bot',
     color: role.color || '#a78bfa',
     configPath: spec.configPath || null,
     configDir: spec.configPath ? path.basename(spec.configPath) : null,
@@ -276,7 +278,7 @@ function deliverToSessions(room, msg) {
     nudgeTimers.set(m.sessionId, setTimeout(() => {
       const s = sessionLookup(m.sessionId);
       if (s && s.status === 'idle' && inboxCount(m.sessionId) > 0) {
-        terminals.typeInto(m.sessionId, '📨 Tienes mensajes nuevos de Agentic Bridge. Léelos (vienen en el contexto o con bridge_read) y responde con bridge_send si corresponde.');
+        terminals.typeInto(m.sessionId, '[Bridge] Tienes mensajes nuevos de Agentic Bridge. Léelos (vienen en el contexto o con bridge_read) y responde con bridge_send si corresponde.');
       }
     }, 2500));
   }
@@ -364,7 +366,7 @@ function enqueue(room, agent, trigger) {
   if (agents.isRunning(key)) { pending.add(key); return; }
   runAgent(room, agent, trigger).catch((e) => {
     setActivity(room.meta.id, agent.id, 'idle');
-    systemNote(room, '⚠️ ' + agent.name + ' no pudo responder: ' + e.message);
+    systemNote(room, agent.name + ' no pudo responder: ' + e.message);
   });
 }
 
@@ -397,7 +399,8 @@ function systemPromptFor(room, agent) {
       '- No repitas lo que otro ya dijo. Si no tienes nada útil que aportar, responde exactamente: (sin comentarios)',
       '- Si un mensaje trae adjuntos, sus rutas están en el texto; ábrelos con Read si los necesitas.',
       '- Tienes herramientas MCP bridge_* para leer otras salas o escribir a otras sesiones si hace falta.',
-    ].join('\n'),
+      room.meta.projectId ? '- El proyecto tiene una pizarra que el humano mira (su kanban sale de todo.md). Deja ahí riesgos, decisiones o preguntas cortas con bridge_board_note; léela con bridge_board_read.' : null,
+    ].filter(Boolean).join('\n'),
   ].join('\n\n');
 }
 
@@ -442,11 +445,11 @@ async function runAgent(room, agent, trigger) {
   if (!isMember(room, agent.id)) { pending.delete(key); saveMeta(room); return; }
   const meta = { cost: res.cost, tools: res.tools.length, durationMs: res.durationMs };
   if (res.isError) {
-    systemNote(room, '⚠️ ' + agent.name + ' no pudo terminar su turno: ' + clip(res.error || 'error desconocido', 400));
+    systemNote(room, agent.name + ' no pudo terminar su turno: ' + clip(res.error || 'error desconocido', 400));
   } else {
     const text = (res.text || '').trim();
     if (text && !SILENT.test(text)) {
-      post(room.meta.id, { kind: 'agent', id: agent.id, name: agent.name, emoji: agent.emoji, color: agent.color, roleId: agent.roleId }, text, [], meta);
+      post(room.meta.id, { kind: 'agent', id: agent.id, name: agent.name, icon: agent.icon, color: agent.color, roleId: agent.roleId }, text, [], meta);
     } else touch(room);
   }
   if (pending.delete(key) && !overBudget(room)) enqueue(room, agent, null);

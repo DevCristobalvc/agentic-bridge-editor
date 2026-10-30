@@ -2,7 +2,7 @@
 import { html, useEffect, useMemo, useRef, useState } from '/vendor/htm-preact.js';
 import { api, useStore, loadRoom, upload, withToken, getState } from '../api.js';
 import {
-  Btn, Icon, IconBtn, Empty, Markdown, Modal, Field, Seg, Avatar, CopyBtn,
+  Btn, Icon, IconBtn, Empty, Markdown, Modal, Field, Seg, Avatar, CopyBtn, memberIcon,
   openModal, closeModal, toast, attempt, useMenu, useNow, ago, clock, money, lightbox, confirmDialog, useAutosize, modelLabel, shortPath, useLocal,
 } from '../ui.js';
 import { navigate } from '../router.js';
@@ -11,14 +11,14 @@ import { newRoom, addMember, MODELS, PERMISSIONS } from '../dialogs.js';
 const MODE_LABEL = { lead: 'Responde el coordinador', mentions: 'Solo mencionados', all: 'Responden todos' };
 
 function memberAvatar(m, size) {
-  if (m.kind === 'session') return html`<${Avatar} size=${size} emoji="⌘" color="var(--surface-3)" />`;
-  return html`<${Avatar} size=${size} emoji=${m.emoji} color=${m.color} name=${m.name} />`;
+  if (m.kind === 'session') return html`<${Avatar} size=${size} icon="terminal" color="#9d8cd9" />`;
+  return html`<${Avatar} size=${size} icon=${memberIcon(m)} color=${m.color} name=${m.name} />`;
 }
 
 function authorAvatar(a, humanName) {
-  if (a.kind === 'human') return html`<${Avatar} name=${humanName || a.name} color="linear-gradient(135deg,#a78bfa,#6d28d9)" />`;
-  if (a.kind === 'session') return html`<${Avatar} emoji="⌘" color="var(--surface-3)" />`;
-  return html`<${Avatar} emoji=${a.emoji || '🤖'} color=${a.color} name=${a.name} />`;
+  if (a.kind === 'human') return html`<${Avatar} human name=${humanName || a.name} />`;
+  if (a.kind === 'session') return html`<${Avatar} icon="terminal" color="#9d8cd9" />`;
+  return html`<${Avatar} icon=${memberIcon(a)} color=${a.color} name=${a.name} />`;
 }
 
 // ---------- room list ----------
@@ -61,7 +61,7 @@ function Message({ m, cont, humanName, onQuote, onMention }) {
     ${authorAvatar(m.author, humanName)}
     <div class="body">
       ${!cont ? html`<div class="by">
-        <b style=${m.author.color ? { color: m.author.color } : null}>${m.author.kind === 'human' ? humanName || m.author.name : m.author.name}</b>
+        <b>${m.author.kind === 'human' ? humanName || m.author.name : m.author.name}</b>
         ${m.author.kind === 'session' ? html`<span class="chip">sesión</span>` : role && role !== m.author.name ? html`<span class="chip">${role}</span>` : null}
         <span class="time">${clock(m.at)}</span>
         ${m.meta && m.meta.cost ? html`<span class="meta">${money(m.meta.cost)}${m.meta.tools ? ' · ' + m.meta.tools + ' herramientas' : ''}${m.meta.durationMs ? ' · ' + Math.round(m.meta.durationMs / 1000) + ' s' : ''}</span>` : null}
@@ -118,7 +118,7 @@ function Composer({ room, draftRef }) {
     }
   };
 
-  const mentionables = () => [{ handle: 'todos', name: 'Todo el equipo', emoji: '👥' }].concat(room.members);
+  const mentionables = () => [{ handle: 'todos', name: 'Todo el equipo', icon: 'team' }].concat(room.members);
   const onInput = (e) => {
     const v = e.target.value;
     setText(v);
@@ -167,7 +167,7 @@ function Composer({ room, draftRef }) {
       onDragOver=${(e) => { e.preventDefault(); setDrop(true); }} onDragLeave=${() => setDrop(false)}
       onDrop=${(e) => { e.preventDefault(); setDrop(false); addFiles([...e.dataTransfer.files]); }}>
     ${pop ? html`<div class="mention-pop">${pop.items.map((it, i) => html`<div class=${i === pop.sel ? 'on' : ''} onMouseDown=${(e) => { e.preventDefault(); pick(it); }}>
-      ${it.kind ? memberAvatar(it, 'sm') : html`<${Avatar} size="sm" emoji=${it.emoji} />`}<b>@${it.handle}</b><span class="muted ellipsis">${it.name}</span>
+      ${it.kind ? memberAvatar(it, 'sm') : html`<${Avatar} size="sm" icon=${it.icon} />`}<b>@${it.handle}</b><span class="muted ellipsis">${it.name}</span>
     </div>`)}</div>` : null}
     ${files.length ? html`<div class="pending">${files.map((f) => html`<div class="att">
       ${f.preview ? html`<img src=${f.preview} alt="" />` : html`<${Icon} name="paperclip" />`}
@@ -226,7 +226,7 @@ function Members({ room, activity, onMention }) {
   return html`<aside class="members">
     <div class="row"><b>Miembros</b><span class="dim">${room.members.length + 1}</span><span class="grow"></span><${Btn} size="sm" icon="plus" onClick=${() => addMember(room)}>Agregar<//></div>
     <div class="col" style="gap:2px">
-      <div class="member"><${Avatar} name=${prefs.humanName} color="linear-gradient(135deg,#a78bfa,#6d28d9)" size="sm" /><div class="grow"><div class="n">${prefs.humanName || 'Tú'}</div><div class="s">humano · tú</div></div></div>
+      <div class="member"><${Avatar} human name=${prefs.humanName} size="sm" /><div class="grow"><div class="n">${prefs.humanName || 'Tú'}</div><div class="s">humano · tú</div></div></div>
       ${room.members.map((m) => {
         const a = act[m.id];
         const s = m.kind === 'session' ? sessions.find((x) => x.id === m.sessionId) : null;
@@ -344,7 +344,7 @@ function Chat({ room, activity, showMembers, setShowMembers, draft }) {
     </div>
     ${running.length ? html`<div class="activity">${running.map((id) => {
       const m = room.members.find((x) => x.id === id);
-      return m ? html`<div class="typing"><i></i><i></i><i></i><b>${m.emoji || ''} ${m.name}</b><span class="ellipsis">${act[id].text}</span></div>` : null;
+      return m ? html`<div class="typing"><i></i><i></i><i></i><b>${m.name}</b><span class="ellipsis">${act[id].text}</span></div>` : null;
     })}</div>` : null}
     <${Composer} room=${room} draftRef=${draft} />
   </section>`;
