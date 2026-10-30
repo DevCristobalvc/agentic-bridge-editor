@@ -240,7 +240,10 @@ function post(id, author, text, attachments, meta) {
   const room = rooms.get(id);
   if (!room) throw new Error('La sala no existe');
   const msg = append(room, author, text, attachments, meta);
+  const turnsBefore = room.meta.autoLeft;
+  if (author.kind === 'human') room.meta.autoLeft = room.meta.maxAutoTurns;
   deliverToSessions(room, msg);
+  if (room.meta.autoLeft !== turnsBefore) saveMeta(room);
   scheduleAgents(room, msg);
   return msg;
 }
@@ -285,7 +288,21 @@ function nudge(sid, attempt) {
   }, NUDGE_RETRIES[attempt]));
 }
 
+// Every message reaches the inbox; only some wake the session up, the same ones that would give
+// an agent a turn: a mention, a direct message, or the human writing in an "everyone answers"
+// room. Wake-ups caused by agents or other sessions spend the room's automatic turns, so two
+// sessions can't keep waking each other.
+function wakes(room, msg, member, mention) {
+  if (msg.author.kind === 'system') return false;
+  if (!(mention.all || mention.ids.includes(member.id) || room.meta.directKey || (msg.author.kind === 'human' && room.meta.mode === 'all'))) return false;
+  if (msg.author.kind === 'human') return true;
+  if (room.meta.autoLeft <= 0) return false;
+  room.meta.autoLeft -= 1;
+  return true;
+}
+
 function deliverToSessions(room, msg) {
+  const mention = mentionsIn(msg.text, room);
   for (const m of room.meta.members) {
     if (m.kind !== 'session' || m.sessionId === msg.author.id) continue;
     const entry = {
@@ -295,7 +312,7 @@ function deliverToSessions(room, msg) {
     };
     fs.appendFileSync(inboxFile(m.sessionId), JSON.stringify(entry) + '\n');
     setUnread(m.sessionId);
-    nudge(m.sessionId, 0);
+    if (wakes(room, msg, m, mention)) nudge(m.sessionId, 0);
   }
 }
 
