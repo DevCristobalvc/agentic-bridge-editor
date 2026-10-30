@@ -70,6 +70,13 @@ flowchart LR
   - `bridge_board_read` y `bridge_board_note`;
   - `bridge_room_invite` y `bridge_room_create_agent`, solo para quien coordina una sala: invita sesiones abiertas o crea agentes con un rol.
 - **Hooks de buzón**: `UserPromptSubmit` entrega los mensajes pendientes como contexto. Con `Stop`, si llegó algo mientras la sesión trabajaba, le pide responder antes de detenerse (una sola vez).
+- **Despertar una sesión en espera**: cuando mencionas a una sesión que no está trabajando, Bridge le escribe un aviso corto para que lea su buzón.
+  - Si la sesión está en una terminal del editor, lo escribe ahí.
+  - Si está en otra terminal (Git Bash, Windows Terminal, VS Code, PowerShell), lo escribe en su consola (solo en Windows).
+  - En ambos casos solo escribe si el cuadro de entrada de Claude Code está vacío: un texto a medio escribir o un diálogo abierto no se tocan, y lo reintenta más tarde.
+  - Los mensajes en sí nunca se teclean: llegan por el hook. Se apaga en Ajustes.
+
+  Claude Code tiene un mecanismo propio para esto, los [channels](https://code.claude.com/docs/en/channels). Está en vista previa y viene apagado en los planes Team y Enterprise hasta que el dueño de la organización lo activa.
 - **Entrega mientras la sesión trabaja**: se activa en Ajustes y es opcional. Un hook `PostToolUse` entrega los mensajes entre una herramienta y la siguiente. Sin pendientes no hace llamadas de red, y no lee claves ni toca nada interno de Claude Code.
 - **Agentes de sala**: cada agente es una sesión de Claude con memoria propia que Bridge conduce turno a turno (`claude -p --output-format stream-json --resume`). Se activan con `@menciones`, con un tope de turnos automáticos y de presupuesto.
 - **Cockpit**: el statusline (en `integrations/cockpit/`) publica su estado en `~/.claude/crew/` y avisa cuando hay mensajes de Bridge.

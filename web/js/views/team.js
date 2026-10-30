@@ -38,10 +38,7 @@ function RoleEditor({ role }) {
           <${Field} label="Nombre"><input class="input" autofocus value=${name} placeholder="p. ej. Diseñador UX" onInput=${(e) => setName(e.target.value)} /><//>
           <${Field} label="Descripción corta"><input class="input" value=${description} placeholder="Qué aporta al equipo" onInput=${(e) => setDescription(e.target.value)} /><//>
         </div>
-        <div class="row wrap" style="gap:14px">
-          <div class="swatches icons">${ROLE_ICONS.map((ic) => html`<button type="button" class=${ic === icon ? 'on' : ''} title=${ic} aria-label=${'Icono ' + ic} onClick=${() => setIcon(ic)}><${Icon} name=${ic} /></button>`)}</div>
-          <div class="swatches">${ROLE_TONES.map((c) => html`<button type="button" class=${c === color ? 'on' : ''} style=${{ background: c }} aria-label=${'Tono ' + c} onClick=${() => setColor(c)}></button>`)}</div>
-        </div>
+        <div class="swatches icons">${ROLE_ICONS.map((ic) => html`<button type="button" class=${ic === icon ? 'on' : ''} title=${ic} aria-label=${'Icono ' + ic} onClick=${() => setIcon(ic)}><${Icon} name=${ic} /></button>`)}</div>
       </div>
     </div>
     <${Field} label="Instrucciones del rol" hint="Se agregan al system prompt del agente. Bridge añade aparte las reglas de la sala y el contrato.">

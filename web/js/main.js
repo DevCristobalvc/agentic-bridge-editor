@@ -66,7 +66,7 @@ function Rail({ route, collapsed, setCollapsed }) {
   return html`<nav class="rail" aria-label="Navegación">
     <a class="brand" href="#/home" style="text-decoration:none;color:inherit">
       <img src="/logo.svg" alt="" />
-      <div class="word"><b>agentic<span>/</span>bridge</b><span class="tag">WEB4 EDITOR</span></div>
+      <div class="word"><b>Agentic Bridge</b><span class="tag">Editor web4</span></div>
     </a>
     <div class="nav">
       ${NAV.map((n) => (n.group

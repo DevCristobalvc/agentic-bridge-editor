@@ -1,8 +1,8 @@
 'use strict';
 // Rooms: group chats where the human, headless agents and live Claude sessions talk.
 // Agents are driven by the hub (agents.js). Live sessions get messages through their inbox,
-// which the Bridge hooks and MCP tools read; a session living in an embedded terminal is
-// also nudged by typing into it when idle.
+// which the Bridge hooks and MCP tools read. An idle session is also nudged with a short prompt:
+// typed into its editor terminal, or into its console when it lives outside the editor (wake.js).
 
 const fs = require('fs');
 const path = require('path');
@@ -11,6 +11,7 @@ const { readJson, writeJson, uid, uuid, slug, clip } = require('./util');
 const store = require('./store');
 const agents = require('./agents');
 const terminals = require('./terminals');
+const wake = require('./wake');
 const { withIcon } = require('./roles');
 
 const ROOMS_DIR = path.join(DATA_DIR, 'rooms');
@@ -262,7 +263,28 @@ function setUnread(sid) {
   emit('unread', { sessionId: sid, count: n });
 }
 
+const NUDGE = '[Bridge] Tienes mensajes nuevos de Agentic Bridge. Léelos (vienen en el contexto o con bridge_read) y responde con bridge_send si corresponde.';
+const NUDGE_RETRIES = [2500, 20000, 60000];
 const nudgeTimers = new Map();
+
+// Wake an idle session that has unread messages: an editor terminal gets the prompt typed in; a
+// session in a terminal outside the editor is woken through its console (Windows), unless the
+// person turned that off. Someone mid-sentence there is left alone and retried a bit later; their
+// next prompt delivers the messages anyway.
+function nudge(sid, attempt) {
+  clearTimeout(nudgeTimers.get(sid));
+  if (attempt >= NUDGE_RETRIES.length) { nudgeTimers.delete(sid); return; }
+  nudgeTimers.set(sid, setTimeout(async () => {
+    const s = sessionLookup(sid);
+    if (!s || !s.alive || s.status !== 'idle' || inboxCount(sid) === 0) return nudge(sid, attempt + 1);
+    if (terminals.typeInto(sid, NUDGE)) { nudgeTimers.delete(sid); return; }
+    if (terminals.bySession(sid) || s.source !== 'claude' || !s.pid || store.prefs.get().wakeExternal === false) return nudge(sid, attempt + 1);
+    const r = await wake.external(s.pid, NUDGE);
+    emit('wake', { sessionId: sid, ok: r.ok, reason: r.reason });
+    if (r.ok) nudgeTimers.delete(sid); else nudge(sid, attempt + 1);
+  }, NUDGE_RETRIES[attempt]));
+}
+
 function deliverToSessions(room, msg) {
   for (const m of room.meta.members) {
     if (m.kind !== 'session' || m.sessionId === msg.author.id) continue;
@@ -273,14 +295,7 @@ function deliverToSessions(room, msg) {
     };
     fs.appendFileSync(inboxFile(m.sessionId), JSON.stringify(entry) + '\n');
     setUnread(m.sessionId);
-    // A session in an embedded terminal can be woken up: type a short prompt when it is idle.
-    clearTimeout(nudgeTimers.get(m.sessionId));
-    nudgeTimers.set(m.sessionId, setTimeout(() => {
-      const s = sessionLookup(m.sessionId);
-      if (s && s.status === 'idle' && inboxCount(m.sessionId) > 0) {
-        terminals.typeInto(m.sessionId, '[Bridge] Tienes mensajes nuevos de Agentic Bridge. Léelos (vienen en el contexto o con bridge_read) y responde con bridge_send si corresponde.');
-      }
-    }, 2500));
+    nudge(m.sessionId, 0);
   }
 }
 

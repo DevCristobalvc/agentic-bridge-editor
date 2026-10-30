@@ -321,7 +321,7 @@ function Chat({ room, activity, showMembers, setShowMembers, draft }) {
   let prev = null;
   return html`<section class="chat">
     <div class="chat-head">
-      <span class="avatar" style="background:var(--accent);color:#fff">${room.directKey ? html`<${Icon} name="mail" />` : '#'}</span>
+      <span class="avatar glyph">${room.directKey ? html`<${Icon} name="mail" />` : room.projectId ? html`<${Icon} name="kanban" />` : '#'}</span>
       <div class="grow"><h3 class="ellipsis">${room.name}</h3><div class="topic ellipsis">${room.topic || MODE_LABEL[room.mode]}</div></div>
       ${running.length ? html`<${Btn} size="sm" kind="danger" icon="stop" onClick=${stopAll}>Detener (${running.length})<//>` : null}
       <span class="chip mono" title="Gastado en esta sala">${money(room.spentUsd || 0)}</span>

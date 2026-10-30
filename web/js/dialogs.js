@@ -423,6 +423,9 @@ function Settings() {
     <${Field} label="Entrega al terminar un turno" hint="Si llegan mensajes mientras una sesión trabaja, el hook Stop le pide responderlos antes de detenerse.">
       <${Switch} checked=${prefs.deliverOnStop !== false} onChange=${(v) => save({ deliverOnStop: v })} label="Activada" />
     <//>
+    <${Field} label="Despertar sesiones fuera del editor" hint="Cuando mencionas a una sesión que espera en otra terminal (Git Bash, Windows Terminal, VS Code), Bridge escribe un aviso corto en su consola para que lea sus mensajes. Solo escribe si el cuadro de entrada está vacío: nunca toca un texto a medio escribir ni un diálogo abierto.">
+      <${Switch} checked=${prefs.wakeExternal !== false} onChange=${(v) => save({ wakeExternal: v })} label="Activado" />
+    <//>
     <${Field} label="Entrega mientras la sesión trabaja" hint="Los mensajes llegan entre una herramienta y la siguiente, sin esperar a que la sesión termine su turno. Usa un hook PostToolUse documentado (no lee claves ni toca nada interno de Claude Code) y se instala en cada cuenta conectada; agrega un instante a cada herramienta.">
       <${Switch} checked=${!!prefs.deliverMidTurn} onChange=${(v) => attempt(() => api.patch('/api/prefs', { deliverMidTurn: v }), v ? 'Entrega inmediata activada en tus cuentas' : 'Entrega inmediata desactivada')} label="Activada" />
     <//>

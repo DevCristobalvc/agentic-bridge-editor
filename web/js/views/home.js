@@ -92,16 +92,17 @@ export function Home() {
   const sorted = alive.slice().sort((a, b) => (a.status === 'busy' ? -1 : 0) - (b.status === 'busy' ? -1 : 0) || (b.updatedAt || 0) - (a.updatedAt || 0));
 
   return html`<div class="page">
-    <section class="hero">
-      <div class="eyebrow">Agentic Bridge · el editor web4</div>
-      <h2>${firstName ? firstName + ', tus' : 'Tus'} agentes y todas tus cuentas, <em>en un solo puente</em>.</h2>
-      <p>Web1 te dejó leer, web2 escribir y web3 poseer. Web4 es delegar: humanos y agentes en el mismo espacio, con contrato, memoria y reglas que se cumplen.</p>
-      <div class="actions">
-        <${Btn} kind="primary" size="lg" icon="plus" onClick=${() => newSession()}>Nueva sesión<//>
-        <${Btn} size="lg" icon="rooms" onClick=${() => newRoom()}>Nueva sala<//>
-        <${Btn} size="lg" icon="scroll" onClick=${() => { navigate('/projects'); setTimeout(newProject, 50); }}>Proyecto con contrato<//>
+    <div class="page-head">
+      <div>
+        <h2>${firstName ? 'Hola, ' + firstName : 'Centro de mando'}</h2>
+        <p>${alive.length} ${alive.length === 1 ? 'sesión abierta' : 'sesiones abiertas'} en ${signed.length} ${signed.length === 1 ? 'cuenta' : 'cuentas'} · ${busy.length ? busy.length + ' trabajando ahora' : 'ninguna trabajando'}</p>
       </div>
-    </section>
+      <div class="actions">
+        <${Btn} icon="scroll" onClick=${() => { navigate('/projects'); setTimeout(newProject, 50); }}>Proyecto con contrato<//>
+        <${Btn} icon="rooms" onClick=${() => newRoom()}>Nueva sala<//>
+        <${Btn} kind="primary" icon="plus" onClick=${() => newSession()}>Nueva sesión<//>
+      </div>
+    </div>
 
     <${ConnectCallout} />
 

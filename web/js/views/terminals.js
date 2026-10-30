@@ -7,9 +7,9 @@ import { navigate } from '../router.js';
 import { newSession, newTerminal } from '../dialogs.js';
 
 const THEME = {
-  background: '#0e0c14', foreground: '#e9e6f2', cursor: '#a78bfa', cursorAccent: '#0e0c14',
-  selectionBackground: 'rgba(167, 139, 250, 0.35)',
-  black: '#1b1924', red: '#f27382', green: '#5ed39b', yellow: '#f0bf62', blue: '#8db1ff', magenta: '#c792ea', cyan: '#89ddff', white: '#d9d5e3',
+  background: '#0c0c0e', foreground: '#e6e6e9', cursor: '#c2c2c7', cursorAccent: '#0c0c0e',
+  selectionBackground: 'rgba(164, 151, 232, 0.32)',
+  black: '#1c1c20', red: '#f27382', green: '#5ed39b', yellow: '#f0bf62', blue: '#8db1ff', magenta: '#c792ea', cyan: '#89ddff', white: '#d9d5e3',
   brightBlack: '#5f5a6e', brightRed: '#ff8f9c', brightGreen: '#7fe6b3', brightYellow: '#ffd27f', brightBlue: '#a9c4ff', brightMagenta: '#ddb2ff', brightCyan: '#a8e8ff', brightWhite: '#ffffff',
 };
 
