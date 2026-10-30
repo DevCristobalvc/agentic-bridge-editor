@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 'use strict';
-// Agentic Bridge inbox hook, registered for UserPromptSubmit and Stop.
+// Agentic Bridge inbox hook, registered for UserPromptSubmit and Stop (and PostToolUse when the
+// person turns on mid-turn delivery in Settings).
 // UserPromptSubmit: pending Bridge messages ride along as context for the new prompt.
+// PostToolUse: they arrive between two tool calls, while the session is still working.
 // Stop: if messages arrived while the session worked, it is asked to answer before stopping.
 // It must never break a session: on any problem it exits 0 without output.
 
@@ -39,6 +41,14 @@ function fmt(m) {
   const sid = input.session_id;
   const event = input.hook_event_name;
   if (!sid || (event === 'Stop' && input.stop_hook_active)) return;
+  if (event === 'PostToolUse') {
+    // Runs after every tool call: a subagent must not swallow its parent's mail, and with
+    // nothing pending (the unread counter the hub keeps) there is no network call at all.
+    if (input.agent_id || /[\\/]subagents[\\/]/.test(String(input.transcript_path || ''))) return;
+    let pending = 0;
+    try { pending = Number(fs.readFileSync(path.join(DATA_DIR, 'unread', sid.replace(/[^\w.-]/g, '_')), 'utf8')) || 0; } catch (e) {}
+    if (!pending) return;
+  }
 
   let base;
   let token;
@@ -49,7 +59,7 @@ function fmt(m) {
 
   let messages = [];
   try {
-    const res = await fetch(base + '/api/bridge/inbox/' + encodeURIComponent(sid) + '?consume=1&event=' + (event === 'Stop' ? 'stop' : 'prompt'), {
+    const res = await fetch(base + '/api/bridge/inbox/' + encodeURIComponent(sid) + '?consume=1&event=' + (event === 'Stop' ? 'stop' : event === 'PostToolUse' ? 'tool' : 'prompt'), {
       headers: { 'x-bridge-token': token },
       signal: AbortSignal.timeout(2000),
     });
@@ -63,6 +73,13 @@ function fmt(m) {
     emit({
       decision: 'block',
       reason: body + '\n\nSi alguno requiere respuesta, contesta con la herramienta bridge_send (to: "#sala" o "@nombre"). Si no requieren nada, termina sin más.',
+    });
+  } else if (event === 'PostToolUse') {
+    emit({
+      hookSpecificOutput: {
+        hookEventName: 'PostToolUse',
+        additionalContext: body + '\n\nLlegaron mientras trabajabas. Si alguno requiere respuesta, contesta con bridge_send (to: "#sala" o "@nombre") y sigue con tu tarea; no la abandones por estos mensajes salvo que te lo pidan expresamente.',
+      },
     });
   } else {
     emit({

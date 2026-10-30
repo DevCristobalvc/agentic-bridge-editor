@@ -10,6 +10,7 @@ const { ROOT, AGY_MCP_FILE } = require('./config');
 const { readJson, writeJson } = require('./util');
 const { claudeArgv, childEnv } = require('./claude');
 const sessions = require('./sessions');
+const store = require('./store');
 
 const MCP_NAME = 'agentic-bridge';
 const fwd = (p) => p.replace(/\\/g, '/');
@@ -25,7 +26,7 @@ const isOurs = (entry) => /integrations[\\/]+hooks[\\/]+(inbox|guard)\.js/.test(
 function hookStatus(settings) {
   const h = (settings && settings.hooks) || {};
   const has = (ev) => (h[ev] || []).some(isOurs);
-  return { inbox: has('UserPromptSubmit') && has('Stop'), guard: has('PreToolUse') };
+  return { inbox: has('UserPromptSubmit') && has('Stop'), guard: has('PreToolUse'), midTurn: has('PostToolUse') };
 }
 
 function mcpStatus(globalConfig) {
@@ -39,7 +40,7 @@ function status() {
     const hooks = hookStatus(settings);
     const skill = fs.existsSync(path.join(a.configPath, 'skills', 'modo-todo', 'SKILL.md'));
     const mcp = mcpStatus(a.globalConfig);
-    return Object.assign({}, a, { integration: { mcp, inbox: hooks.inbox, guard: hooks.guard, skill, complete: mcp && hooks.inbox && hooks.guard && skill } });
+    return Object.assign({}, a, { integration: { mcp, inbox: hooks.inbox, guard: hooks.guard, midTurn: hooks.midTurn, skill, complete: mcp && hooks.inbox && hooks.guard && skill } });
   });
   const agy = readJson(AGY_MCP_FILE) || {};
   return {
@@ -48,15 +49,46 @@ function status() {
   };
 }
 
-function mergeHooks(settings) {
+// midTurn adds the opt-in PostToolUse delivery: messages reach a session between two of its
+// tool calls instead of waiting for the end of the turn. It costs one short process per tool
+// call, so it is installed only while the person has it switched on.
+function mergeHooks(settings, midTurn) {
   const s = Object.assign({}, settings);
   const hooks = Object.assign({}, s.hooks || {});
   const put = (event, entry) => { hooks[event] = (hooks[event] || []).filter((e) => !isOurs(e)).concat([entry]); };
   put('UserPromptSubmit', { hooks: [{ type: 'command', command: INBOX_HOOK, timeout: 5 }] });
   put('Stop', { hooks: [{ type: 'command', command: INBOX_HOOK, timeout: 5 }] });
   put('PreToolUse', { matcher: GUARD_MATCHER, hooks: [{ type: 'command', command: GUARD_HOOK, timeout: 5 }] });
+  if (midTurn) put('PostToolUse', { matcher: '*', hooks: [{ type: 'command', command: INBOX_HOOK, timeout: 3 }] });
+  else if (hooks.PostToolUse) {
+    hooks.PostToolUse = hooks.PostToolUse.filter((e) => !isOurs(e));
+    if (!hooks.PostToolUse.length) delete hooks.PostToolUse;
+  }
   s.hooks = hooks;
   return s;
+}
+
+function backupSettings(a) {
+  const settingsPath = path.join(a.configPath, 'settings.json');
+  if (!fs.existsSync(settingsPath)) return;
+  const bdir = path.join(a.configPath, 'backups');
+  fs.mkdirSync(bdir, { recursive: true });
+  fs.copyFileSync(settingsPath, path.join(bdir, 'settings.json.bak.' + new Date().toISOString().replace(/[:.]/g, '-')));
+}
+
+// Turn mid-turn delivery on or off in every account that is already connected.
+function setMidTurn(enabled) {
+  const changed = [];
+  for (const a of sessions.accounts()) {
+    const settingsPath = path.join(a.configPath, 'settings.json');
+    const current = readJson(settingsPath) || {};
+    const h = hookStatus(current);
+    if (!h.inbox || h.midTurn === !!enabled) continue;
+    backupSettings(a);
+    writeJson(settingsPath, mergeHooks(current, !!enabled));
+    changed.push(a.configDir);
+  }
+  return { changed, status: status() };
 }
 
 function copyDir(src, dst) {
@@ -85,12 +117,8 @@ async function connectAccount(a) {
   // settings.json hooks, with a timestamped backup next to the account's other backups.
   const settingsPath = path.join(a.configPath, 'settings.json');
   const current = readJson(settingsPath) || {};
-  if (fs.existsSync(settingsPath)) {
-    const bdir = path.join(a.configPath, 'backups');
-    fs.mkdirSync(bdir, { recursive: true });
-    fs.copyFileSync(settingsPath, path.join(bdir, 'settings.json.bak.' + new Date().toISOString().replace(/[:.]/g, '-')));
-  }
-  writeJson(settingsPath, mergeHooks(current));
+  backupSettings(a);
+  writeJson(settingsPath, mergeHooks(current, !!store.prefs.get().deliverMidTurn));
   log.push('hooks inbox y guard en settings.json');
 
   copyDir(SKILL_SRC, path.join(a.configPath, 'skills', 'modo-todo'));
@@ -123,4 +151,4 @@ async function connectAll() {
   return { results, status: status() };
 }
 
-module.exports = { status, connectAll };
+module.exports = { status, connectAll, setMidTurn };

@@ -400,6 +400,7 @@ function systemPromptFor(room, agent) {
       '- Si un mensaje trae adjuntos, sus rutas están en el texto; ábrelos con Read si los necesitas.',
       '- Tienes herramientas MCP bridge_* para leer otras salas o escribir a otras sesiones si hace falta.',
       room.meta.projectId ? '- El proyecto tiene una pizarra que el humano mira (su kanban sale de todo.md). Deja ahí riesgos, decisiones o preguntas cortas con bridge_board_note; léela con bridge_board_read.' : null,
+      room.meta.leadId === agent.id ? '- Coordinas la sala: puedes sumar un agente con bridge_room_create_agent (un rol del equipo) o invitar una sesión abierta con bridge_room_invite. Hazlo solo cuando el trabajo lo pida o el humano lo solicite: cada agente consume turnos y presupuesto.' : null,
     ].filter(Boolean).join('\n'),
   ].join('\n\n');
 }
@@ -481,6 +482,7 @@ function roomsForSession(sid) {
 module.exports = {
   load, list, get, create, update, remove, addMember, removeMember, updateMember,
   post, postAsHuman, stop, consumeInbox, peekInbox, inboxCount, directRoom, findRoom, roomsForSession,
+  note: (id, text) => { const room = rooms.get(id); return room ? systemNote(room, text) : null; },
   setSessionLookup: (fn) => { sessionLookup = fn; },
   raw: (id) => rooms.get(id) || null,
 };

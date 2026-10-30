@@ -1,6 +1,6 @@
 // Agentic Bridge — app shell: rail, top bar, command palette, overlays, toasts.
 import { html, render, useEffect, useMemo, useRef, useState } from '/vendor/htm-preact.js';
-import { boot, useStore, api, getState, setState } from './api.js';
+import { boot, useStore, api, getState, setState, on } from './api.js';
 import { Icon, IconBtn, Btn, useLocal, toast, attempt } from './ui.js';
 import { useRoute, navigate } from './router.js';
 import { newSession, newRoom, openSettings, newTerminal } from './dialogs.js';
@@ -16,6 +16,29 @@ import { Vault } from './views/vault.js';
 import { History } from './views/history.js';
 import { Boards, newBoard } from './views/boards.js';
 import { Accounts, editSecret } from './views/accounts.js';
+
+// ---------- desktop notifications (opt-in in Settings, only while the tab is in the background) ----------
+function notifyOn() { try { return JSON.parse(localStorage.getItem('ab.notify')) === true; } catch (e) { return false; } }
+function desktop(title, body, to) {
+  if (!document.hidden || !notifyOn() || typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+  const n = new Notification(title, { body: String(body || '').replace(/\s+/g, ' ').slice(0, 160), icon: '/logo.svg', tag: to });
+  n.onclick = () => { window.focus(); navigate(to); n.close(); };
+}
+on('room:message', (d) => {
+  const m = d && d.message;
+  if (!m || m.author.kind === 'human' || m.author.kind === 'system') return;
+  const room = getState().rooms.find((r) => r.id === d.roomId);
+  desktop(m.author.name + ' · ' + (room ? room.name : 'sala'), m.text, '/rooms/' + d.roomId);
+});
+let lastStatus = null;
+on('sessions', (list) => {
+  if (lastStatus) {
+    for (const s of list) {
+      if (s.alive && s.status === 'idle' && lastStatus.get(s.id) === 'busy') desktop(s.name + ' terminó su turno', s.last && s.last.assistant ? s.last.assistant.text : '', '/sessions/' + s.id);
+    }
+  }
+  lastStatus = new Map(list.map((s) => [s.id, s.status]));
+});
 
 const NAV = [
   { group: 'Espacio' },

@@ -268,7 +268,14 @@ route('POST', '/api/vault', async (req) => vault.save(await jsonBody(req), { kin
 route('PUT', '/api/vault/:id', async (req, p) => vault.save(Object.assign(await jsonBody(req), { id: p.id })));
 route('DELETE', '/api/vault/:id', (req, p) => ({ ok: vault.remove(p.id) }));
 
-route('PATCH', '/api/prefs', async (req) => store.prefs.set(Object.assign({}, store.prefs.get(), await jsonBody(req))));
+route('PATCH', '/api/prefs', async (req) => {
+  const b = await jsonBody(req);
+  const before = !!store.prefs.get().deliverMidTurn;
+  const out = store.prefs.set(Object.assign({}, store.prefs.get(), b));
+  // Mid-turn delivery lives in each account's settings.json (a PostToolUse hook): keep it in step.
+  if ('deliverMidTurn' in b && !!b.deliverMidTurn !== before) broadcast({ type: 'integration', data: connect.setMidTurn(!!b.deliverMidTurn).status });
+  return out;
+});
 
 // sessions
 route('GET', '/api/sessions', () => snap);
@@ -549,7 +556,52 @@ route('GET', '/api/bridge/rooms/:ref/messages', (req, p, url) => {
 route('GET', '/api/bridge/inbox/:sid', (req, p, url) => {
   const event = url.searchParams.get('event');
   if (event === 'stop' && store.prefs.get().deliverOnStop === false) return { messages: [] };
+  if (event === 'tool' && !store.prefs.get().deliverMidTurn) return { messages: [] };
   return { messages: url.searchParams.get('consume') === '1' ? rooms.consumeInbox(p.sid) : rooms.peekInbox(p.sid) };
+});
+
+// Room membership from inside a room: only the agent that coordinates it (the human does it in the editor).
+function roomFor(ref, who) {
+  const room = ref ? rooms.findRoom(String(ref).replace(/^#/, '')) : who && who.kind === 'agent' ? rooms.raw(who.roomId) : null;
+  if (!room) throw fail(404, ref ? 'No encontré la sala "' + ref + '". Usa bridge_rooms para ver los nombres.' : 'Indica la sala (room).');
+  return room;
+}
+function requireLead(who, room) {
+  if (!who) throw fail(400, 'No pude identificar quién eres.');
+  if (who.kind !== 'agent' || who.roomId !== room.meta.id || room.meta.leadId !== who.id) {
+    throw fail(403, 'Solo quien coordina la sala "' + room.meta.name + '" puede agregar miembros; el humano lo hace desde el editor. Pídeselo al coordinador.');
+  }
+}
+route('POST', '/api/bridge/rooms/invite', async (req) => {
+  const b = await jsonBody(req);
+  const who = identify(b.from || {});
+  const room = roomFor(b.room, who);
+  requireLead(who, room);
+  const target = resolveSessionRef(String(b.session || '').trim());
+  if (!target) throw fail(404, 'No encontré una sesión abierta llamada "' + b.session + '". Usa bridge_sessions para ver los nombres.');
+  const existing = room.meta.members.find((m) => m.sessionId === target.id);
+  if (existing) return { ok: true, room: room.meta.name, handle: existing.handle, already: true };
+  rooms.addMember(room.meta.id, { kind: 'session', sessionId: target.id, name: target.name });
+  const m = rooms.raw(room.meta.id).meta.members.find((x) => x.sessionId === target.id);
+  rooms.note(room.meta.id, who.name + ' agregó a la sesión ' + target.name + ' como @' + m.handle + '.');
+  return { ok: true, room: room.meta.name, handle: m.handle };
+});
+route('POST', '/api/bridge/rooms/agent', async (req) => {
+  const b = await jsonBody(req);
+  const who = identify(b.from || {});
+  const room = roomFor(b.room, who);
+  requireLead(who, room);
+  const ref = String(b.role || '').trim().toLowerCase();
+  const role = store.roles.get().find((r) => r.id === ref || r.name.toLowerCase() === ref);
+  if (!role) throw fail(404, 'No existe el rol "' + b.role + '". Roles disponibles: ' + store.roles.get().map((r) => r.name).join(', ') + '.');
+  if (room.meta.members.filter((m) => m.kind === 'agent').length >= 12) throw fail(400, 'La sala ya tiene 12 agentes, el máximo.');
+  const lead = room.meta.members.find((m) => m.id === who.id);
+  const model = /^[\w.\-[\]]{1,40}$/.test(String(b.model || '')) ? String(b.model) : undefined;
+  const before = new Set(room.meta.members.map((m) => m.id));
+  rooms.addMember(room.meta.id, { kind: 'agent', roleId: role.id, name: String(b.name || role.name).replace(/[\r\n]/g, ' ').trim().slice(0, 40) || role.name, configPath: lead.configPath, cwd: lead.cwd, model });
+  const m = rooms.raw(room.meta.id).meta.members.find((x) => !before.has(x.id));
+  rooms.note(room.meta.id, who.name + ' sumó al equipo a ' + m.name + ' (' + role.name + ') como @' + m.handle + '.');
+  return { ok: true, room: room.meta.name, handle: m.handle, name: m.name, role: role.name };
 });
 route('POST', '/api/bridge/send', async (req) => {
   const b = await jsonBody(req);

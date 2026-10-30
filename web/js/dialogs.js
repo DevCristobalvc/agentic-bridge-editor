@@ -390,8 +390,16 @@ function Settings() {
   const integration = useStore((s) => s.integration);
   const [humanName, setHumanName] = useState(prefs.humanName || '');
   const [theme, setTheme] = useLocal('theme', 'dark');
+  const [notify, setNotify] = useLocal('notify', false);
   const [busy, setBusy] = useState(false);
 
+  const toggleNotify = async (v) => {
+    if (v && typeof Notification !== 'undefined' && Notification.permission !== 'granted') {
+      const p = await Notification.requestPermission().catch(() => 'denied');
+      if (p !== 'granted') { toast('El navegador no dio permiso para avisos', 'bad'); return; }
+    }
+    setNotify(v);
+  };
   const applyTheme = (t) => {
     setTheme(t);
     if (t === 'system') delete document.documentElement.dataset.theme;
@@ -415,6 +423,12 @@ function Settings() {
     <${Field} label="Entrega al terminar un turno" hint="Si llegan mensajes mientras una sesión trabaja, el hook Stop le pide responderlos antes de detenerse.">
       <${Switch} checked=${prefs.deliverOnStop !== false} onChange=${(v) => save({ deliverOnStop: v })} label="Activada" />
     <//>
+    <${Field} label="Entrega mientras la sesión trabaja" hint="Los mensajes llegan entre una herramienta y la siguiente, sin esperar a que la sesión termine su turno. Usa un hook PostToolUse documentado (no lee claves ni toca nada interno de Claude Code) y se instala en cada cuenta conectada; agrega un instante a cada herramienta.">
+      <${Switch} checked=${!!prefs.deliverMidTurn} onChange=${(v) => attempt(() => api.patch('/api/prefs', { deliverMidTurn: v }), v ? 'Entrega inmediata activada en tus cuentas' : 'Entrega inmediata desactivada')} label="Activada" />
+    <//>
+    <${Field} label="Avisos de escritorio" hint="Cuando estás en otra ventana: un agente responde en una sala o te menciona, o una sesión termina su turno.">
+      <${Switch} checked=${notify} onChange=${toggleNotify} label="Activados" />
+    <//>
     <${Field} label="Cuentas conectadas a Bridge" hint="Instala en cada cuenta el servidor MCP, los hooks de buzón y guardas, y la skill /modo-todo. Se puede repetir sin duplicar nada.">
       <${IntegrationList} integration=${integration} />
       <div><${Btn} icon="plug" kind="primary" busy=${busy} onClick=${connect}>Conectar todas<//></div>
@@ -428,7 +442,7 @@ export function IntegrationList({ integration }) {
   return html`<div class="card">
     ${integration.accounts.map((a) => html`<div class="list-row" style="cursor:default">
       <div class="grow"><div class="t">${a.email || 'sin sesión iniciada'}</div><div class="s mono">${a.configDir}</div></div>
-      <div class="row wrap" style="justify-content:flex-end">${mark(a.integration.mcp, 'MCP')}${mark(a.integration.inbox, 'Buzón')}${mark(a.integration.guard, 'Guardas')}${mark(a.integration.skill, 'Skill')}</div>
+      <div class="row wrap" style="justify-content:flex-end">${mark(a.integration.mcp, 'MCP')}${mark(a.integration.inbox, 'Buzón')}${mark(a.integration.guard, 'Guardas')}${mark(a.integration.skill, 'Skill')}${a.integration.midTurn ? mark(true, 'Entrega inmediata') : null}</div>
     </div>`)}
     ${integration.antigravity.present ? html`<div class="list-row" style="cursor:default">
       <div class="grow"><div class="t">Antigravity</div><div class="s mono">~/.gemini/config/mcp_config.json</div></div>

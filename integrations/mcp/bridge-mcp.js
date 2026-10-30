@@ -144,6 +144,29 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'number' } } },
   },
   {
+    name: 'bridge_room_invite',
+    description: 'Solo para quien coordina una sala: agrega a la sala una sesión que ya está abierta (de Claude o Antigravity, de cualquier cuenta) para que reciba sus mensajes y responda cuando la mencionen. Usa bridge_sessions para ver los nombres.',
+    inputSchema: {
+      type: 'object',
+      properties: { session: { type: 'string', description: 'Nombre o id de la sesión, p. ej. "back-api"' }, room: { type: 'string', description: 'Sala (por defecto, la tuya)' } },
+      required: ['session'],
+    },
+  },
+  {
+    name: 'bridge_room_create_agent',
+    description: 'Solo para quien coordina una sala: crea un agente nuevo con un rol del equipo (Supervisor, Arquitecto, Desarrollador, QA, Seguridad, Documentador o los que haya creado el humano) ya unido a la sala, con tu misma cuenta y carpeta. Responde cuando lo mencionen con su @handle.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        role: { type: 'string', description: 'Nombre o id del rol, p. ej. "Desarrollador"' },
+        name: { type: 'string', description: 'Nombre visible (opcional; por defecto, el del rol)' },
+        model: { type: 'string', description: 'opus, sonnet o haiku (opcional; por defecto, el del rol)' },
+        room: { type: 'string', description: 'Sala (por defecto, la tuya)' },
+      },
+      required: ['role'],
+    },
+  },
+  {
     name: 'bridge_board_read',
     description: 'Lee la pizarra (Excalidraw) de un proyecto o una pizarra libre de Agentic Bridge: columnas, tarjetas y notas en texto. Sin "board" usa el proyecto de tu sala o de tu carpeta.',
     inputSchema: { type: 'object', properties: { board: { type: 'string', description: 'Nombre del proyecto o de la pizarra (opcional)' } } },
@@ -210,6 +233,14 @@ async function runTool(name, args) {
     const list = await call('GET', '/api/bridge/vault?' + qs({ q: args.query, limit: args.limit }));
     if (!list.length) return args.query ? 'Nada en el Baúl coincide con "' + args.query + '".' : 'El Baúl está vacío.';
     return list.map((n) => '## ' + n.title + (n.tags.length ? '  #' + n.tags.join(' #') : '') + '\n_' + (n.author || '?') + ' · ' + n.updatedAt.slice(0, 16).replace('T', ' ') + '_\n\n' + n.text + (n.attachments.length ? '\n\nAdjuntos: ' + n.attachments.join(', ') : '')).join('\n\n---\n\n');
+  }
+  if (name === 'bridge_room_invite') {
+    const out = await call('POST', '/api/bridge/rooms/invite', { from: await from(), room: args.room, session: args.session });
+    return out.already ? args.session + ' ya estaba en #' + out.room + ' como @' + out.handle + '.' : 'Listo: ' + args.session + ' entró a #' + out.room + ' como @' + out.handle + '. Menciónalo así para darle un turno.';
+  }
+  if (name === 'bridge_room_create_agent') {
+    const out = await call('POST', '/api/bridge/rooms/agent', { from: await from(), room: args.room, role: args.role, name: args.name, model: args.model });
+    return 'Listo: ' + out.name + ' (' + out.role + ') entró a #' + out.room + ' como @' + out.handle + '. Menciónalo con @' + out.handle + ' para darle su primer turno.';
   }
   if (name === 'bridge_board_read') {
     const b = await call('GET', '/api/bridge/board?' + qs(Object.assign({ board: args.board }, await from())));
