@@ -7,14 +7,16 @@
 const fs = require('fs');
 const path = require('path');
 
+// Runs before every guarded tool call in every connected session, so it must finish in
+// milliseconds: the safety timer is cleared as soon as stdin ends, and the process exits
+// explicitly instead of waiting on anything left open.
 function readStdin() {
   return new Promise((resolve) => {
     let raw = '';
-    const done = () => resolve(raw);
+    const timer = setTimeout(() => resolve(raw), 1500);
     process.stdin.setEncoding('utf8');
     process.stdin.on('data', (c) => { raw += c; });
-    process.stdin.on('end', done);
-    setTimeout(done, 1500);
+    process.stdin.on('end', () => { clearTimeout(timer); resolve(raw); });
   });
 }
 
@@ -59,9 +61,12 @@ function matchesCommand(cmd, pattern) {
   return cmd.toLowerCase().includes(p.toLowerCase());
 }
 
+// Exit code 2 blocks the tool; stderr carries the reason. Let the process end on its own so
+// the reason is flushed before exit.
 function block(reason) {
+  process.exitCode = 2;
   process.stderr.write(reason);
-  process.exit(2);
+  return true;
 }
 
 (async () => {
@@ -81,13 +86,17 @@ function block(reason) {
     const rel = path.relative(root, path.resolve(cwd, target)).replace(/\\/g, '/');
     if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) {
       const hit = (guards.protectedPaths || []).find((g) => matchesPath(rel, g));
-      if (hit) block('Bloqueado por el contrato de "' + name + '": `' + rel + '` es una ruta protegida (patrón `' + hit + '`). Si de verdad hay que cambiarla, pídelo en la sala del equipo y espera aprobación del humano.');
+      if (hit) return block('Bloqueado por el contrato de "' + name + '": `' + rel + '` es una ruta protegida (patrón `' + hit + '`). Si de verdad hay que cambiarla, pídelo en la sala del equipo y espera aprobación del humano.');
     }
   }
 
   const cmd = typeof ti.command === 'string' ? ti.command : null;
   if (cmd && /^(Bash|PowerShell)$/.test(tool)) {
     const hit = (guards.forbiddenCommands || []).find((g) => matchesCommand(cmd, g));
-    if (hit) block('Bloqueado por el contrato de "' + name + '": el comando contiene `' + hit + '`, que está prohibido. Busca otra forma o pide aprobación al humano en la sala del equipo.');
+    if (hit) return block('Bloqueado por el contrato de "' + name + '": el comando coincide con `' + hit + '`, que está prohibido. Busca otra forma o pide aprobación al humano en la sala del equipo.');
   }
-})().catch(() => {});
+  return false;
+})().catch(() => {}).then(() => {
+  // Nothing should be left open; this unref'd timer only guards against surprises.
+  setTimeout(() => process.exit(process.exitCode || 0), 300).unref();
+});

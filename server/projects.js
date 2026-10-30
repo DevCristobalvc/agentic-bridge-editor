@@ -12,10 +12,23 @@ const rooms = require('./rooms');
 const SKILL_FILE = path.join(ROOT, 'integrations', 'skills', 'modo-todo', 'SKILL.md');
 const GUARD_HOOK = path.join(ROOT, 'integrations', 'hooks', 'guard.js');
 
+// Plain entries match as text; /…/ entries are regular expressions. The regexes are anchored so
+// that `git log --format` or `grep shutdown` stay allowed.
 const DEFAULT_GUARDS = {
   protectedPaths: ['.env', '.env.*', '**/*.pem', '**/*.key', '.git/**', '.bridge/contract.json'],
-  forbiddenCommands: ['rm -rf /', 'git push --force', 'git push -f', 'git reset --hard', 'Remove-Item -Recurse -Force C:\\', 'format ', 'shutdown'],
+  forbiddenCommands: [
+    'git push --force', 'git push -f', 'git reset --hard',
+    '/\\brm\\s+-[a-z]*r[a-z]*f?[a-z]*\\s+(\\/|~|[a-z]:\\\\?)(\\s|$)/i',
+    '/Remove-Item\\b.*-Recurse\\b.*\\s[a-z]:\\\\?(\\s|$)/i',
+    '/(^|[;&|]\\s*)format(\\.com)?\\s+[a-z]:/i',
+    '/(^|[;&|]\\s*)(shutdown|Stop-Computer|Restart-Computer)\\b/i',
+  ],
 };
+
+function num(v, def) {
+  const n = Number(v);
+  return v === null || v === undefined || v === '' || !Number.isFinite(n) ? def : n;
+}
 
 const TASK_HEADING = /^##\s+(?:\[([^\]\s]+)\]|([A-Za-z0-9][A-Za-z0-9._-]*)[.)]?)(?:\s+[-—:]?\s*(.*))?$/;
 const FIELD = /^\s*[-*]\s*\*\*([^*:]+):?\*\*:?\s*(.*?)\s*$/;
@@ -188,9 +201,9 @@ function normalizeContract(input, p) {
       forbiddenCommands: (c.guards && c.guards.forbiddenCommands) || DEFAULT_GUARDS.forbiddenCommands,
     },
     limits: {
-      budgetUsd: Number(c.limits && c.limits.budgetUsd) || 0,
-      maxAutoTurns: Number(c.limits && c.limits.maxAutoTurns) || 8,
-      maxParallelAgents: Number(c.limits && c.limits.maxParallelAgents) || 3,
+      budgetUsd: Math.max(0, num(c.limits && c.limits.budgetUsd, 0)),
+      maxAutoTurns: Math.max(0, num(c.limits && c.limits.maxAutoTurns, 8)),
+      maxParallelAgents: Math.max(1, num(c.limits && c.limits.maxParallelAgents, 3)),
     },
     definitionOfDone: c.definitionOfDone || [],
   };
@@ -220,7 +233,9 @@ function create(input) {
   if (lead) rooms.update(room.id, { leadId: lead.id });
 
   contract.team = raw.meta.members.filter((m) => m.kind === 'agent').map((m) => ({ role: m.roleId, name: m.name, handle: m.handle, account: m.configDir }));
-  writeJson(contractFile(p), contract);
+  // Never replace what already lives in the folder (a contract from /modo-todo, the repo's own
+  // subagents): Bridge only fills in what is missing.
+  if (!fs.existsSync(contractFile(p))) writeJson(contractFile(p), contract);
   const contractPath = path.join(dir, 'CONTRATO.md');
   if (!fs.existsSync(contractPath)) fs.writeFileSync(contractPath, contractMarkdown(p, contract, raw));
   const todoPath = path.join(dir, 'todo.md');
@@ -229,7 +244,8 @@ function create(input) {
   fs.mkdirSync(agentsDir, { recursive: true });
   for (const m of raw.meta.members.filter((x) => x.kind === 'agent')) {
     const role = store.roles.get().find((r) => r.id === m.roleId) || {};
-    fs.writeFileSync(path.join(agentsDir, m.handle + '.md'), subagentFile(m, role));
+    const file = path.join(agentsDir, m.handle + '.md');
+    if (!fs.existsSync(file)) fs.writeFileSync(file, subagentFile(m, role));
   }
 
   store.projects.update((list) => list.concat([p]));
@@ -299,7 +315,7 @@ function plan(id, objective) {
   const text = [
     '@' + lead.handle + ' Activa el **modo todo.md** para este proyecto.',
     objective ? 'Objetivo: ' + objective : null,
-    'Sigue la skill `' + SKILL_FILE + '`: lee CONTRATO.md, completa lo que falte del contrato y convierte el objetivo en tareas T01…Tn dentro de todo.md, con owner (`@handle` del equipo), descripción y criterios de aceptación verificables. Cuando el tablero esté listo, resume el plan aquí y menciona a quien empieza.',
+    'Sigue la skill `' + SKILL_FILE + '`: lee CONTRATO.md, completa lo que falte del contrato y convierte el objetivo en tareas T01…Tn dentro de todo.md, con owner (`@handle` del equipo), descripción y criterios de aceptación verificables. `.bridge/contract.json` ya existe y lo administra Bridge (está protegido): si crees que una guarda o un límite debe cambiar, propónlo aquí. Cuando el tablero esté listo, resume el plan aquí y menciona a quien empieza.',
   ].filter(Boolean).join('\n\n');
   return rooms.postAsHuman(p.roomId, text, []);
 }

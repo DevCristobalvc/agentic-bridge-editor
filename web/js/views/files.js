@@ -1,5 +1,5 @@
 // Files: folder tree + folder view + file viewer (code, markdown, images, PDF) with light editing.
-import { html, useEffect, useMemo, useState } from '/vendor/htm-preact.js';
+import { html, useEffect, useMemo, useRef, useState } from '/vendor/htm-preact.js';
 import { api, useStore, rawFileUrl } from '../api.js';
 import {
   Btn, Icon, IconBtn, Empty, Markdown, Modal, Seg, CopyBtn, Switch,
@@ -145,12 +145,22 @@ function FileViewer({ path }) {
   const [draft, setDraft] = useState('');
   const [saving, setSaving] = useState(false);
 
-  const load = () => api.get('/api/fs/read?path=' + encodeURIComponent(path)).then((f) => { setFile(f); setError(null); }).catch((e) => setError(e.message));
+  // Only the response for the file currently on screen may land: a slow answer for a file
+  // clicked earlier must not replace it (and then be saved over it).
+  const current = useRef(path);
+  current.current = path;
+  const load = () => {
+    const asked = path;
+    return api.get('/api/fs/read?path=' + encodeURIComponent(asked))
+      .then((f) => { if (current.current === asked) { setFile(f); setError(null); } })
+      .catch((e) => { if (current.current === asked) setError(e.message); });
+  };
   useEffect(() => { setFile(null); setEditing(false); load(); }, [path]);
 
   const save = async () => {
+    if (!file) return;
     setSaving(true);
-    const f = await attempt(() => api.put('/api/fs/write', { path, content: draft }), 'Guardado');
+    const f = await attempt(() => api.put('/api/fs/write', { path: file.path, content: draft, eol: file.eol, bom: file.bom }), 'Guardado');
     setSaving(false);
     if (f) { setFile(f); setEditing(false); }
   };

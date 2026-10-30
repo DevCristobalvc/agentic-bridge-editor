@@ -11,15 +11,20 @@ const path = require('path');
 
 const DATA_DIR = process.env.BRIDGE_DATA_DIR || path.join(os.homedir(), '.agentic-bridge');
 
+// Runs on every prompt and every stop in every connected session: clear the safety timer as
+// soon as stdin ends and exit explicitly, so nothing left open delays the session.
 function readStdin() {
   return new Promise((resolve) => {
     let raw = '';
-    const done = () => resolve(raw);
+    const timer = setTimeout(() => resolve(raw), 1500);
     process.stdin.setEncoding('utf8');
     process.stdin.on('data', (c) => { raw += c; });
-    process.stdin.on('end', done);
-    setTimeout(done, 1500);
+    process.stdin.on('end', () => { clearTimeout(timer); resolve(raw); });
   });
+}
+
+function emit(obj) {
+  process.stdout.write(JSON.stringify(obj), () => process.exit(0));
 }
 
 function fmt(m) {
@@ -55,16 +60,17 @@ function fmt(m) {
 
   const body = '📨 Mensajes nuevos de Agentic Bridge (' + messages.length + '):\n\n' + messages.map(fmt).join('\n\n');
   if (event === 'Stop') {
-    process.stdout.write(JSON.stringify({
+    emit({
       decision: 'block',
       reason: body + '\n\nSi alguno requiere respuesta, contesta con la herramienta bridge_send (to: "#sala" o "@nombre"). Si no requieren nada, termina sin más.',
-    }));
+    });
   } else {
-    process.stdout.write(JSON.stringify({
+    emit({
       hookSpecificOutput: {
         hookEventName: 'UserPromptSubmit',
         additionalContext: body + '\n\nPara responder usa la herramienta bridge_send (to: "#sala" o "@nombre").',
       },
-    }));
+    });
   }
-})().catch(() => {});
+  return true;
+})().catch(() => false).then((wrote) => { if (!wrote) process.exit(0); });

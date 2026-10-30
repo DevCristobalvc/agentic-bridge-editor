@@ -8,9 +8,17 @@ import {
 import { navigate } from '../router.js';
 import { FolderPicker, AccountSelect, TeamPicker, newSession } from '../dialogs.js';
 
+// Same defaults as server/projects.js. /…/ entries are anchored regexes so ordinary commands
+// (git log --format, grep shutdown, rm -rf build) stay allowed.
 const DEFAULT_GUARDS = {
   protectedPaths: ['.env', '.env.*', '**/*.pem', '**/*.key', '.git/**', '.bridge/contract.json'],
-  forbiddenCommands: ['rm -rf /', 'git push --force', 'git push -f', 'git reset --hard', 'Remove-Item -Recurse -Force C:\\', 'format ', 'shutdown'],
+  forbiddenCommands: [
+    'git push --force', 'git push -f', 'git reset --hard',
+    '/\\brm\\s+-[a-z]*r[a-z]*f?[a-z]*\\s+(\\/|~|[a-z]:\\\\?)(\\s|$)/i',
+    '/Remove-Item\\b.*-Recurse\\b.*\\s[a-z]:\\\\?(\\s|$)/i',
+    '/(^|[;&|]\\s*)format(\\.com)?\\s+[a-z]:/i',
+    '/(^|[;&|]\\s*)(shutdown|Stop-Computer|Restart-Computer)\\b/i',
+  ],
 };
 const DEFAULT_RULES = [
   'Cambios pequeños y verificables; nada de reescrituras sin acuerdo en la sala',

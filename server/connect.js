@@ -8,7 +8,7 @@ const path = require('path');
 const { execFile } = require('child_process');
 const { ROOT, AGY_MCP_FILE } = require('./config');
 const { readJson, writeJson } = require('./util');
-const { claudeBin, childEnv } = require('./claude');
+const { claudeArgv, childEnv } = require('./claude');
 const sessions = require('./sessions');
 
 const MCP_NAME = 'agentic-bridge';
@@ -19,7 +19,8 @@ const GUARD_HOOK = 'node "' + fwd(path.join(ROOT, 'integrations', 'hooks', 'guar
 const SKILL_SRC = path.join(ROOT, 'integrations', 'skills', 'modo-todo');
 const GUARD_MATCHER = 'Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell';
 
-const isOurs = (entry) => JSON.stringify(entry || {}).includes('agentic-bridge');
+// Our hook entries are recognised by the script they run, wherever the repo was cloned.
+const isOurs = (entry) => /integrations[\\/]+hooks[\\/]+(inbox|guard)\.js/.test(JSON.stringify(entry || {}));
 
 function hookStatus(settings) {
   const h = (settings && settings.hooks) || {};
@@ -70,7 +71,10 @@ function copyDir(src, dst) {
 
 function run(args, env) {
   return new Promise((resolve) => {
-    execFile(claudeBin(), args, { env, timeout: 60000, windowsHide: true }, (err, stdout, stderr) => {
+    let file;
+    let argv;
+    try { [file, argv] = claudeArgv(args); } catch (e) { resolve({ ok: false, out: e.message }); return; }
+    execFile(file, argv, { env, timeout: 60000, windowsHide: true }, (err, stdout, stderr) => {
       resolve({ ok: !err, out: String(stdout || '') + String(stderr || '') });
     });
   });
@@ -109,6 +113,10 @@ function connectAntigravity() {
 }
 
 async function connectAll() {
+  // Fail before touching any settings.json if claude itself cannot be run.
+  try { claudeArgv([]); } catch (e) {
+    return { results: [{ configDir: 'claude', ok: false, log: [e.message] }], status: status() };
+  }
   const results = [];
   for (const a of sessions.accounts()) results.push(await connectAccount(a));
   results.push(Object.assign({ configDir: 'antigravity' }, connectAntigravity()));

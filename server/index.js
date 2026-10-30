@@ -32,6 +32,11 @@ const VENDOR = {
   'xterm.css': '@xterm/xterm/css/xterm.css',
   'addon-fit.js': '@xterm/addon-fit/lib/addon-fit.js',
 };
+// Headers for user-provided bytes served from the hub's origin: no scripts, no sniffing.
+const SAFE_RAW = {
+  'X-Content-Type-Options': 'nosniff',
+  'Content-Security-Policy': "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox",
+};
 const TYPES = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json',
@@ -140,7 +145,11 @@ function memberSpecs(list) {
 // One tiny Haiku turn in an account just to read its subscription windows.
 function probeUsage(configPath, configDir) {
   return new Promise((resolve) => {
-    const proc = spawn(claude.claudeBin(), ['-p', '--output-format', 'stream-json', '--verbose', '--model', 'haiku'], { env: claude.childEnv(configPath), windowsHide: true });
+    let proc;
+    try {
+      const [file, argv] = claude.claudeArgv(['-p', '--output-format', 'stream-json', '--verbose', '--model', 'haiku']);
+      proc = spawn(file, argv, { env: claude.childEnv(configPath), windowsHide: true });
+    } catch (e) { resolve(false); return; }
     let buf = '';
     let found = false;
     const timer = setTimeout(() => { try { proc.kill(); } catch (e) {} }, 60000);
@@ -323,7 +332,8 @@ route('GET', '/api/uploads/:id', (req, p, url, res) => {
   const file = findUpload(p.id);
   if (!file) throw fail(404, 'No existe');
   const { stream, mime } = files.rawStream(file);
-  res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'private, max-age=86400' });
+  // Uploads come from anywhere (a dropped SVG can carry script): never let them run on our origin.
+  res.writeHead(200, Object.assign({ 'Content-Type': mime, 'Cache-Control': 'private, max-age=86400' }, SAFE_RAW));
   stream.pipe(res);
   return undefined;
 });
@@ -339,7 +349,7 @@ route('GET', '/api/fs/raw', (req, p, url, res) => {
   const { stream, mime, size } = files.rawStream(url.searchParams.get('path'));
   const headers = { 'Content-Type': mime, 'Content-Length': size, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' };
   // SVGs and other documents must not run scripts; the PDF viewer needs its own rules.
-  if (mime !== 'application/pdf') headers['Content-Security-Policy'] = "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'";
+  if (mime !== 'application/pdf') Object.assign(headers, SAFE_RAW);
   res.writeHead(200, headers);
   stream.pipe(res);
   return undefined;
@@ -347,7 +357,7 @@ route('GET', '/api/fs/raw', (req, p, url, res) => {
 route('PUT', '/api/fs/write', async (req) => {
   const b = await jsonBody(req);
   if (typeof b.content !== 'string') throw fail(400, 'Falta el contenido');
-  return files.write(b.path, b.content);
+  return files.write(b.path, b.content, { eol: b.eol, bom: !!b.bom });
 });
 route('POST', '/api/fs/open', async (req) => { const b = await jsonBody(req); files.open(b.path, b.app); return { ok: true }; });
 

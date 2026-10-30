@@ -57,7 +57,11 @@ function read(file) {
     const n = fs.readSync(fd, buf, 0, len, 0);
     const slice = buf.subarray(0, n);
     if (looksBinary(slice)) return Object.assign(base, { kind: 'binary' });
-    return Object.assign(base, { kind: 'text', content: slice.toString('utf8').replace(/^﻿/, ''), truncated: st.size > MAX_TEXT });
+    const raw = slice.toString('utf8');
+    const bom = raw.charCodeAt(0) === 0xfeff;
+    const content = bom ? raw.slice(1) : raw;
+    // Remembered so an edit in the browser (which normalizes to \n) is saved back faithfully.
+    return Object.assign(base, { kind: 'text', content, bom, eol: /\r\n/.test(content) ? 'crlf' : 'lf', truncated: st.size > MAX_TEXT });
   } finally {
     fs.closeSync(fd);
   }
@@ -70,9 +74,12 @@ function rawStream(file) {
   return { stream: fs.createReadStream(abs), mime: MIME[ext(abs)] || 'application/octet-stream', size: st.size };
 }
 
-function write(file, content) {
+function write(file, content, opts) {
   const abs = resolve(file);
-  fs.writeFileSync(abs, content);
+  let out = String(content);
+  if (opts && opts.eol === 'crlf') out = out.replace(/\r?\n/g, '\r\n');
+  if (opts && opts.bom) out = '﻿' + out;
+  fs.writeFileSync(abs, out);
   return read(abs);
 }
 
@@ -91,12 +98,27 @@ function roots(extra) {
   return out.filter((r) => { try { return fs.statSync(r.path).isDirectory(); } catch (e) { return false; } });
 }
 
+// VS Code's executable, found without going through cmd.exe (a path with "&" would run code).
+function vscodeExe() {
+  if (process.platform !== 'win32') return 'code';
+  const candidates = [
+    path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Microsoft VS Code', 'Code.exe'),
+    path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Microsoft VS Code', 'Code.exe'),
+  ];
+  try {
+    // `where code` finds the bin\code.cmd shim; Code.exe sits one folder up.
+    const out = require('child_process').execFileSync('where', ['code.cmd'], { encoding: 'utf8', windowsHide: true });
+    for (const line of out.split(/\r?\n/).filter(Boolean)) candidates.push(path.join(path.dirname(path.dirname(line.trim())), 'Code.exe'));
+  } catch (e) {}
+  return candidates.find((c) => fs.existsSync(c)) || null;
+}
+
 function open(target, app) {
   const abs = resolve(target);
   if (app === 'vscode') {
-    const exe = path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Microsoft VS Code', 'Code.exe');
-    if (process.platform === 'win32' && fs.existsSync(exe)) spawn(exe, [abs], { detached: true, stdio: 'ignore' }).unref();
-    else spawn(process.platform === 'win32' ? 'cmd.exe' : 'code', process.platform === 'win32' ? ['/d', '/c', 'code', abs] : [abs], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+    const exe = vscodeExe();
+    if (!exe) throw Object.assign(new Error('No encontré VS Code instalado'), { status: 404 });
+    spawn(exe, [abs], { detached: true, stdio: 'ignore' }).unref();
   } else if (process.platform === 'win32') {
     const isDir = fs.statSync(abs).isDirectory();
     spawn('explorer.exe', isDir ? [abs] : ['/select,', abs], { detached: true, stdio: 'ignore' }).unref();

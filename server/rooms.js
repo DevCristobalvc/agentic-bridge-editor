@@ -25,6 +25,12 @@ let sessionLookup = () => null;
 
 const emit = (type, data) => store.bus.emit('event', { type, data });
 
+// A number from user input, keeping an explicit 0 (unlike `Number(x) || def`).
+function num(v, def) {
+  const n = Number(v);
+  return v === null || v === undefined || v === '' || !Number.isFinite(n) ? def : n;
+}
+
 // ---------- persistence ----------
 function metaFile(id) { return path.join(ROOMS_DIR, id + '.json'); }
 function logFile(id) { return path.join(ROOMS_DIR, id + '.jsonl'); }
@@ -129,8 +135,8 @@ function create({ name, topic, mode, maxAutoTurns, budgetUsd, projectId, members
   const id = uid('r');
   const meta = {
     id, name: name || 'sala', topic: topic || '', mode: mode || 'lead', projectId: projectId || null,
-    maxAutoTurns: Number(maxAutoTurns) || 6, autoLeft: Number(maxAutoTurns) || 6,
-    budgetUsd: Number(budgetUsd) || 0, spentUsd: 0, leadId: null,
+    maxAutoTurns: Math.max(0, num(maxAutoTurns, 6)), autoLeft: Math.max(0, num(maxAutoTurns, 6)),
+    budgetUsd: Math.max(0, num(budgetUsd, 0)), spentUsd: 0, leadId: null,
     members: [], cursors: {}, createdAt: Date.now(), updatedAt: Date.now(),
   };
   const room = { meta, messages: [] };
@@ -147,8 +153,8 @@ function update(id, patch) {
   const room = rooms.get(id);
   if (!room) return null;
   for (const k of ['name', 'topic', 'mode', 'leadId']) if (patch[k] !== undefined) room.meta[k] = patch[k];
-  if (patch.maxAutoTurns !== undefined) room.meta.maxAutoTurns = room.meta.autoLeft = Math.max(0, Number(patch.maxAutoTurns) || 0);
-  if (patch.budgetUsd !== undefined) room.meta.budgetUsd = Math.max(0, Number(patch.budgetUsd) || 0);
+  if (patch.maxAutoTurns !== undefined) room.meta.maxAutoTurns = room.meta.autoLeft = Math.max(0, num(patch.maxAutoTurns, room.meta.maxAutoTurns));
+  if (patch.budgetUsd !== undefined) room.meta.budgetUsd = Math.max(0, num(patch.budgetUsd, room.meta.budgetUsd));
   touch(room);
   return summary(room);
 }
@@ -179,6 +185,7 @@ function addMember(id, spec) {
 function removeMember(id, memberId) {
   const room = rooms.get(id);
   if (!room) return null;
+  pending.delete(id + ':' + memberId);
   agents.kill(id + ':' + memberId);
   room.meta.members = room.meta.members.filter((m) => m.id !== memberId);
   if (room.meta.leadId === memberId) room.meta.leadId = (room.meta.members.find((m) => m.kind === 'agent') || {}).id || null;
@@ -327,19 +334,30 @@ function scheduleAgents(room, msg) {
   } else if (msg.author.kind !== 'system') {
     targets = all ? roomAgents : roomAgents.filter((a) => ids.includes(a.id));
     if (!targets.length) return;
-    if (room.meta.autoLeft <= 0) {
+    // Only charge turns that will really happen: an agent already queued for a re-run
+    // absorbs this mention for free. Never spend more turns than are left.
+    const queued = targets.filter((a) => pending.has(room.meta.id + ':' + a.id));
+    const fresh = targets.filter((a) => !pending.has(room.meta.id + ':' + a.id));
+    if (fresh.length && room.meta.autoLeft <= 0) {
       systemNote(room, 'Se alcanzó el límite de ' + room.meta.maxAutoTurns + ' turnos automáticos entre agentes. Escribe en la sala para que continúen.');
       return;
     }
-    room.meta.autoLeft -= targets.length;
+    const allowed = fresh.slice(0, room.meta.autoLeft);
+    room.meta.autoLeft -= allowed.length;
+    targets = queued.concat(allowed);
   }
   if (!targets.length) return;
-  if (room.meta.budgetUsd && room.meta.spentUsd >= room.meta.budgetUsd) {
-    systemNote(room, 'Presupuesto de la sala agotado (US$' + room.meta.spentUsd.toFixed(2) + ' de US$' + room.meta.budgetUsd.toFixed(2) + '). Súbelo en los ajustes de la sala para continuar.');
-    return;
-  }
+  if (overBudget(room)) return;
   for (const a of targets) enqueue(room, a, msg);
 }
+
+function overBudget(room) {
+  if (!room.meta.budgetUsd || room.meta.spentUsd < room.meta.budgetUsd) return false;
+  systemNote(room, 'Presupuesto de la sala agotado (US$' + room.meta.spentUsd.toFixed(2) + ' de US$' + room.meta.budgetUsd.toFixed(2) + '). Súbelo en los ajustes de la sala para continuar.');
+  return true;
+}
+
+function isMember(room, memberId) { return room.meta.members.some((m) => m.id === memberId); }
 
 function enqueue(room, agent, trigger) {
   const key = room.meta.id + ':' + agent.id;
@@ -420,6 +438,8 @@ async function runAgent(room, agent, trigger) {
   if (!rooms.has(room.meta.id)) return;
   room.meta.spentUsd = (room.meta.spentUsd || 0) + (res.cost || 0);
   setActivity(room.meta.id, agent.id, 'idle');
+  // Removed from the room while it worked: its turn is discarded.
+  if (!isMember(room, agent.id)) { pending.delete(key); saveMeta(room); return; }
   const meta = { cost: res.cost, tools: res.tools.length, durationMs: res.durationMs };
   if (res.isError) {
     systemNote(room, '⚠️ ' + agent.name + ' no pudo terminar su turno: ' + clip(res.error || 'error desconocido', 400));
@@ -429,7 +449,7 @@ async function runAgent(room, agent, trigger) {
       post(room.meta.id, { kind: 'agent', id: agent.id, name: agent.name, emoji: agent.emoji, color: agent.color, roleId: agent.roleId }, text, [], meta);
     } else touch(room);
   }
-  if (pending.delete(key)) enqueue(room, agent, null);
+  if (pending.delete(key) && !overBudget(room)) enqueue(room, agent, null);
 }
 
 function stop(id) {

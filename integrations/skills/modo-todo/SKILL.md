@@ -29,7 +29,7 @@ En la raíz del proyecto (la carpeta de trabajo actual, salvo que el usuario ind
    8. Definición de hecho.
    9. Tablero: el formato de `todo.md`.
    10. Escalamiento: cuándo se pregunta al humano.
-3. **Escribe `.bridge/contract.json`** con esta forma (sin comentarios):
+3. **Escribe `.bridge/contract.json`** solo si no existe. Si ya existe, no lo edites: lo administra Agentic Bridge y sus propias guardas lo protegen. Propón los cambios en la sala. Si lo creas, usa esta forma (sin comentarios):
    ```json
    {
      "version": 1,
@@ -39,14 +39,14 @@ En la raíz del proyecto (la carpeta de trabajo actual, salvo que el usuario ind
      "rules": ["…"],
      "guards": {
        "protectedPaths": [".env", ".env.*", "**/*.pem", ".git/**", ".bridge/contract.json"],
-       "forbiddenCommands": ["git push --force", "git reset --hard", "rm -rf /"]
+       "forbiddenCommands": ["git push --force", "git reset --hard", "/(^|[;&|]\\s*)(shutdown|Stop-Computer)\\b/i"]
      },
      "limits": { "budgetUsd": 0, "maxAutoTurns": 8, "maxParallelAgents": 3 },
      "definitionOfDone": ["…"],
      "team": [{ "role": "supervisor", "name": "Supervisor", "handle": "supervisor" }]
    }
    ```
-   Los patrones de `protectedPaths` son globs relativos a la raíz (`**` cualquier profundidad; sin `/` aplica al nombre en cualquier carpeta). En `forbiddenCommands`, cada entrada es un fragmento de texto, o una expresión regular entre `/…/`.
+   Los patrones de `protectedPaths` son globs relativos a la raíz (`**` cualquier profundidad; sin `/` aplica al nombre en cualquier carpeta). En `forbiddenCommands`, cada entrada es un fragmento de texto o una expresión regular entre `/…/`. Prefiere expresiones ancladas a palabras sueltas, para no bloquear comandos legítimos: `format` a secas también bloquearía `git log --format`.
 4. **Planifica en `todo.md`.** Divide el objetivo en tareas de 30 a 120 minutos de trabajo de un agente, en orden de dependencias. Cada tarea va en este formato exacto, que leen el cockpit y el tablero de Bridge:
    ```markdown
    ## T01. Título corto en infinitivo

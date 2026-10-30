@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn, execFile } = require('child_process');
 const { DATA_DIR } = require('./config');
-const { claudeBin, childEnv } = require('./claude');
+const { claudeArgv, childEnv } = require('./claude');
 const { clip } = require('./util');
 const sessions = require('./sessions');
 
@@ -46,7 +46,8 @@ function spawnTurn({ key, agent, roomId, systemPrompt, prompt, onEvent, resume }
     const started = Date.now();
     let proc;
     try {
-      proc = spawn(claudeBin(), buildArgs(agent, sysFile, resume), { cwd: agent.cwd, env, windowsHide: true });
+      const [file, argv] = claudeArgv(buildArgs(agent, sysFile, resume));
+      proc = spawn(file, argv, { cwd: agent.cwd, env, windowsHide: true });
     } catch (e) {
       resolve({ text: '', cost: 0, isError: true, error: e.message, tools: [], durationMs: 0 });
       return;

@@ -7,7 +7,7 @@ const path = require('path');
 const { DATA_DIR } = require('./config');
 const { uid, uuid } = require('./util');
 const { bus } = require('./store');
-const { claudeBin, childEnv } = require('./claude');
+const { claudeArgv, childEnv } = require('./claude');
 
 let pty = null;
 try { pty = require('node-pty'); } catch (e) { pty = null; }
@@ -45,12 +45,12 @@ function create(kind, opts) {
   let sessionId = null;
   let env = Object.assign({}, process.env);
   if (kind === 'claude') {
-    file = claudeBin();
     sessionId = opts.resumeId || uuid();
     args = opts.resumeId ? ['--resume', opts.resumeId] : ['--session-id', sessionId, '-n', opts.name];
     if (opts.rolePrompt) args.push('--append-system-prompt-file', systemPromptFile(opts.name, opts.rolePrompt));
     if (opts.model) args.push('--model', opts.model);
     if (opts.permissionMode) args.push('--permission-mode', opts.permissionMode);
+    [file, args] = claudeArgv(args);
     env = childEnv(opts.configPath, { BRIDGE_SESSION_ID: sessionId, BRIDGE_TERMINAL_ID: id });
   } else {
     file = 'powershell.exe';
@@ -65,6 +65,7 @@ function create(kind, opts) {
     id, kind, name: opts.name || (kind === 'claude' ? 'claude' : 'PowerShell'), cwd,
     configDir: opts.configPath ? path.basename(opts.configPath) : null, sessionId, roleId: opts.roleId || null,
     proc, alive: true, exitCode: null, createdAt: Date.now(), buffer: '', clients: new Set(),
+    lastInputAt: 0, draft: false,
   };
   proc.onData((data) => {
     t.buffer += data;
@@ -91,7 +92,13 @@ function attach(id, ws) {
     let m;
     try { m = JSON.parse(String(raw)); } catch (e) { return; }
     if (!t.alive) return;
-    if (m.type === 'input' && typeof m.data === 'string') t.proc.write(m.data);
+    if (m.type === 'input' && typeof m.data === 'string') {
+      t.proc.write(m.data);
+      // Remember whether the person left something half-typed at the prompt: Enter, Ctrl+C
+      // and Esc leave it clean, anything else leaves a draft.
+      t.lastInputAt = Date.now();
+      t.draft = !/[\r\x03\x1b]$/.test(m.data);
+    }
     else if (m.type === 'resize' && m.cols > 0 && m.rows > 0) {
       try { t.proc.resize(Math.min(500, m.cols | 0), Math.min(200, m.rows | 0)); } catch (e) {}
     }
@@ -113,10 +120,12 @@ function bySession(sessionId) {
   return null;
 }
 
-// Type a prompt into an idle Claude terminal and submit it.
+// Type a prompt into an idle Claude terminal and submit it — unless the person is mid-sentence
+// there; then the inbox hook delivers on their next prompt instead.
 function typeInto(sessionId, text) {
   const t = bySession(sessionId);
   if (!t) return false;
+  if (t.draft || (t.lastInputAt && Date.now() - t.lastInputAt < 8000)) return false;
   t.proc.write(text.replace(/\r?\n/g, ' '));
   setTimeout(() => { if (t.alive) t.proc.write('\r'); }, 180);
   return true;

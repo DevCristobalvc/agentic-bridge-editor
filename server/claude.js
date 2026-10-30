@@ -19,6 +19,30 @@ function claudeBin() {
   return cachedBin;
 }
 
+// What to spawn for `claude …`. The native installer gives an .exe. An npm install gives a .cmd
+// shim, which Node cannot spawn without a shell, and a shell would parse names and prompts.
+// So read the shim and run the program it wraps directly.
+let cachedCommand = null;
+function claudeCommand() {
+  if (cachedCommand) return cachedCommand;
+  const bin = claudeBin();
+  if (!/\.cmd$/i.test(bin)) return (cachedCommand = { file: bin, prefix: [] });
+  let target = null;
+  try {
+    const m = /"%dp0%\\([^"]+\.(?:c?js|mjs|exe))"/i.exec(fs.readFileSync(bin, 'utf8'));
+    if (m) target = path.join(path.dirname(bin), m[1]);
+  } catch (e) {}
+  if (!target || !fs.existsSync(target)) throw new Error('No pude ejecutar ' + bin + ' sin una shell. Instala Claude Code con el instalador nativo (claude.exe).');
+  cachedCommand = /\.exe$/i.test(target) ? { file: target, prefix: [] } : { file: process.execPath, prefix: [target] };
+  return cachedCommand;
+}
+
+// spawn-style [file, args] for a claude invocation.
+function claudeArgv(args) {
+  const c = claudeCommand();
+  return [c.file, c.prefix.concat(args)];
+}
+
 // The default ~/.claude must run with CLAUDE_CONFIG_DIR unset: its login lives in ~/.claude.json.
 function isDefaultConfig(configPath) {
   return !configPath || path.resolve(configPath) === path.join(HOME, '.claude');
@@ -45,14 +69,11 @@ function launchExternal({ name, configPath, cwd, resumeId, systemPromptFile, mod
   if (permissionMode) args.push('--permission-mode', permissionMode);
   const env = childEnv(configPath);
   const wt = path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'WindowsApps', 'wt.exe');
-  const opts = { cwd, env, detached: true, stdio: 'ignore' };
-  if (process.platform === 'win32' && fs.existsSync(wt)) {
-    spawn(wt, ['-w', '0', 'new-tab', '--title', name || 'claude', '-d', cwd, claudeBin(), ...args], opts).unref();
-  } else if (process.platform === 'win32') {
-    spawn('cmd.exe', ['/c', 'start', '', claudeBin(), ...args], opts).unref();
-  } else {
-    throw new Error('Abrir terminal externa solo está implementado en Windows.');
-  }
+  const [file, argv] = claudeArgv(args);
+  if (process.platform !== 'win32') throw new Error('Abrir terminal externa solo está implementado en Windows.');
+  if (!fs.existsSync(wt)) throw new Error('No encontré Windows Terminal; usa la terminal integrada.');
+  // wt receives the program and its arguments as separate argv entries: no shell in between.
+  spawn(wt, ['-w', '0', 'new-tab', '--title', name || 'claude', '-d', cwd, file, ...argv], { cwd, env, detached: true, stdio: 'ignore' }).unref();
 }
 
-module.exports = { claudeBin, childEnv, isDefaultConfig, launchExternal };
+module.exports = { claudeBin, claudeArgv, childEnv, isDefaultConfig, launchExternal };
