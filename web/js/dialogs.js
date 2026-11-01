@@ -1,8 +1,9 @@
 // Dialogs shared by several views: new session, new room, add member, folder picker, settings.
 import { html, useEffect, useState } from '/vendor/htm-preact.js';
-import { api, getState, setState, useStore } from './api.js';
-import { Btn, Icon, IconBtn, Modal, Field, Seg, Switch, Avatar, closeModal, openModal, toast, attempt, useLocal, shortPath } from './ui.js';
+import { api, getState, setState, useStore, REMOTE, logoutDevice } from './api.js';
+import { Btn, Icon, IconBtn, Modal, Field, Seg, Switch, Avatar, closeModal, openModal, toast, attempt, useLocal, shortPath, ago, useDebounced, CopyBtn } from './ui.js';
 import { navigate } from './router.js';
+import { expectSession } from './views/terminals.js';
 
 const MODELS = [
   { value: '', label: 'Por defecto de la cuenta' },
@@ -118,7 +119,10 @@ function NewSession({ preset }) {
   const [agyModel, setAgyModel] = useState('');
   const [permissionMode, setPermissionMode] = useLocal('sessionPermission', 'acceptEdits');
   const [agyMode, setAgyMode] = useLocal('agyMode', 'accept-edits');
-  const [where, setWhere] = useState(me && me.pty ? 'pty' : 'external');
+  const [savedWhere, setWhere] = useLocal('sessionWhere', me && me.pty ? 'pty' : 'gitbash');
+  const shells = useStore((s) => s.shells);
+  const hasGitBash = shells.some((x) => x.id === 'gitbash');
+  const where = (savedWhere === 'pty' && !(me && me.pty)) || (savedWhere === 'gitbash' && !hasGitBash) ? (hasGitBash ? 'gitbash' : 'external') : savedWhere;
   const [secretIds, setSecretIds] = useState([]);
   const [prompt, setPrompt] = useState(preset.prompt || '');
   const [busy, setBusy] = useState(false);
@@ -140,12 +144,16 @@ function NewSession({ preset }) {
     if (!res) return;
     closeModal();
     if (res.terminal) { toast(kind === 'agy' ? 'Sesión de Antigravity abierta' : 'Sesión creada en una terminal integrada'); navigate('/terminals/' + res.terminal.id); }
-    else toast('Sesión abierta en Windows Terminal');
+    else if (res.sessionId) {
+      expectSession(res.sessionId, name.trim() || 'sesion', where);
+      toast(where === 'gitbash' ? 'Abriendo en una ventana de Git Bash en tu PC' : 'Abriendo en Windows Terminal');
+      navigate('/terminals/s.' + res.sessionId);
+    }
   };
 
   const pick = (v) => { if (!preset.agent) setAgent(v); };
   return html`<${Modal} title="Nueva sesión" subtitle="Un agente de verdad en tu carpeta, con su terminal, que Bridge puede ver y despertar."
-    footer=${html`<span class="left">${kind === 'agy' ? 'Antigravity CLI en una terminal integrada.' : where === 'pty' ? 'Vive dentro del editor mientras Bridge esté abierto.' : 'Se abre en una pestaña nueva de Windows Terminal.'}</span>
+    footer=${html`<span class="left">${kind === 'agy' ? 'Antigravity CLI en una terminal integrada.' : where === 'pty' ? 'Vive dentro del editor mientras Bridge esté abierto.' : where === 'gitbash' ? 'Se abre en una ventana de Git Bash en tu PC; aquí la ves como espejo.' : 'Se abre en una pestaña nueva de Windows Terminal.'}</span>
       <${Btn} kind="ghost" onClick=${closeModal}>Cancelar<//><${Btn} kind="primary" icon="play" busy=${busy} onClick=${submit}>Crear sesión<//>`}>
     <form onSubmit=${submit} class="col" style="gap:14px">
       <div class="agent-switch" role="radiogroup" aria-label="Agente">
@@ -178,33 +186,106 @@ function NewSession({ preset }) {
             <select class="select" value=${model} onChange=${(e) => setModel(e.target.value)}>${MODELS.map((m) => html`<option value=${m.value}>${m.label}</option>`)}</select>
           <//>
         </div>
-        <div class="grid-2">
-          <${Field} label="Permisos" hint="Las guardas del contrato aplican en cualquier modo.">
-            <select class="select" value=${permissionMode} onChange=${(e) => setPermissionMode(e.target.value)}>
-              <option value="default">Pregunta antes de actuar</option>
-              <option value="acceptEdits">Acepta ediciones</option>
-              <option value="plan">Solo planifica</option>
-              <option value="bypassPermissions">Sin preguntas</option>
-            </select>
-          <//>
-          <${Field} label="Dónde se abre">
-            <${Seg} value=${where} onChange=${setWhere} options=${[
-              { value: 'pty', label: 'Integrada', icon: 'terminal' },
-              { value: 'external', label: 'Windows Terminal', icon: 'external' },
-            ].filter((o) => o.value !== 'pty' || (me && me.pty))} />
-          <//>
-        </div>` : html`
+        <${Field} label="Permisos" hint="Las guardas del contrato aplican en cualquier modo.">
+          <select class="select" value=${permissionMode} onChange=${(e) => setPermissionMode(e.target.value)}>
+            <option value="default">Pregunta antes de actuar</option>
+            <option value="acceptEdits">Acepta ediciones</option>
+            <option value="plan">Solo planifica</option>
+            <option value="bypassPermissions">Sin preguntas</option>
+          </select>
+        <//>
+        <${Field} label="Dónde se abre" hint=${where === 'pty' ? 'Dentro del editor: su terminal y su chat viven aquí.' : where === 'gitbash' ? 'Una ventana de Git Bash en tu PC, como cuando la abres a mano; aquí la ves y le escribes como espejo.' : 'Una pestaña de Windows Terminal en tu PC; aquí la ves y le escribes como espejo.'}>
+          <div><${Seg} value=${where} onChange=${setWhere} options=${[
+            { value: 'pty', label: 'Editor', icon: 'terminal' },
+            { value: 'gitbash', label: 'Git Bash', icon: 'git' },
+            { value: 'external', label: 'Windows Terminal', icon: 'external' },
+          ].filter((o) => (o.value !== 'pty' || (me && me.pty)) && (o.value !== 'gitbash' || hasGitBash))} /></div>
+        <//>` : html`
         <${Field} label="Permisos">
           <select class="select" value=${agyMode} onChange=${(e) => setAgyMode(e.target.value)}>${AGY_MODES.map((m) => html`<option value=${m.value}>${m.label}</option>`)}</select>
         <//>`}
       ${kind === 'agy' || where === 'pty' ? html`<${Field} label="Credenciales como variables de entorno" hint="Se descifran solo para esta terminal; nunca pasan por las salas ni por el MCP.">
         <${SecretPicker} value=${secretIds} onChange=${setSecretIds} />
       <//>` : null}
-      ${kind === 'agy' || where === 'pty' ? html`<${Field} label="Primera instrucción (opcional)" hint="La sesión arranca trabajando en esto.">
+      <${Field} label="Primera instrucción (opcional)" hint="La sesión arranca trabajando en esto.">
         <textarea class="textarea" rows="2" value=${prompt} placeholder="p. ej. Revisa el README y propón mejoras" onInput=${(e) => setPrompt(e.target.value)}></textarea>
-      <//>` : null}
-      ${kind === 'claude' ? html`<div class="hint muted" style="font-size:12px">La primera vez en una carpeta, Claude pregunta si confías en ella: respóndelo en la terminal.</div>` : null}
+      <//>
+      ${kind === 'claude' ? html`<div class="hint muted" style="font-size:12px">La primera vez en una carpeta, Claude pregunta si confías en ella: respóndelo en la terminal${where === 'pty' ? '' : ' o en la pestaña «Pantalla» de su espejo'}.</div>` : null}
     </form>
+  <//>`;
+}
+
+// ---------- resume a past conversation (in the editor, Git Bash or Windows Terminal) ----------
+export function resumeSession() { openModal(() => html`<${ResumeSession} />`, 'modal'); }
+
+function ResumeSession() {
+  const me = useStore((s) => s.me);
+  const shells = useStore((s) => s.shells);
+  const sessions = useStore((s) => s.sessions);
+  const hasGitBash = shells.some((x) => x.id === 'gitbash');
+  const [list, setList] = useState(null);
+  const [q, setQ] = useState('');
+  const dq = useDebounced(q, 150);
+  const [sel, setSel] = useState(null);
+  const [savedWhere, setWhere] = useLocal('resumeWhere', me && me.pty ? 'pty' : 'gitbash');
+  const where = (savedWhere === 'pty' && !(me && me.pty)) || (savedWhere === 'gitbash' && !hasGitBash) ? (hasGitBash ? 'gitbash' : 'external') : savedWhere;
+  const [busy, setBusy] = useState(false);
+  const [indexing, setIndexing] = useState(null);
+  // Right after the hub starts the history is still being indexed: keep reading until it is.
+  useEffect(() => {
+    let stop = false;
+    let timer = null;
+    const load = () => api.get('/api/history').then((d) => {
+      if (stop) return;
+      setList(d.conversations.filter((c) => c.source === 'claude'));
+      setIndexing(d.indexing && d.indexing.running ? d.indexing : null);
+      if (d.indexing && d.indexing.running) timer = setTimeout(load, 2500);
+    }).catch((e) => { toast(e.message, 'bad'); setList([]); });
+    load();
+    return () => { stop = true; clearTimeout(timer); };
+  }, []);
+  const open = new Set(sessions.filter((s) => s.alive).map((s) => s.id));
+  const needle = dq.trim().toLowerCase();
+  const rows = (list || []).filter((c) => !needle || [c.title, c.firstPrompt, c.lastPrompt, c.cwd, c.account].some((v) => v && v.toLowerCase().includes(needle))).slice(0, 80);
+  const now = Date.now();
+  const go = async (pick) => {
+    const c = pick || sel;
+    if (!c) return;
+    if (open.has(c.id)) {
+      const s = sessions.find((x) => x.id === c.id);
+      closeModal();
+      navigate(s && s.terminalId ? '/terminals/' + s.terminalId : '/terminals/s.' + c.id);
+      return;
+    }
+    setBusy(true);
+    const name = (c.title || 'sesion').slice(0, 40);
+    const r = await attempt(() => api.post('/api/sessions', { resumeId: c.id, configDir: c.configDir, cwd: c.cwd, name, where }));
+    setBusy(false);
+    if (!r) return;
+    closeModal();
+    if (r.terminal) navigate('/terminals/' + r.terminal.id);
+    else if (r.sessionId) { expectSession(r.sessionId, name, where); navigate('/terminals/s.' + r.sessionId); toast(where === 'gitbash' ? 'Retomando en Git Bash en tu PC' : 'Retomando en Windows Terminal'); }
+  };
+  return html`<${Modal} title="Retomar una sesión" subtitle="Elige una conversación de cualquiera de tus cuentas y sigue donde quedó."
+    footer=${html`<div class="left"><${Seg} value=${where} onChange=${setWhere} options=${[
+      { value: 'pty', label: 'Editor', icon: 'terminal' },
+      { value: 'gitbash', label: 'Git Bash', icon: 'git' },
+      { value: 'external', label: 'Windows Terminal', icon: 'external' },
+    ].filter((o) => (o.value !== 'pty' || (me && me.pty)) && (o.value !== 'gitbash' || hasGitBash))} /></div>
+      <${Btn} kind="ghost" onClick=${closeModal}>Cancelar<//><${Btn} kind="primary" icon="play" busy=${busy} disabled=${!sel} onClick=${() => go()}>${sel && open.has(sel.id) ? 'Ir a la sesión' : 'Retomar'}<//>`}>
+    <div class="col" style="gap:10px">
+      <div class="with-icon"><${Icon} name="search" /><input class="input" autofocus value=${q} placeholder="Título, prompt, carpeta o cuenta…" onInput=${(e) => setQ(e.target.value)} /></div>
+      <div class="card resume-list">
+        ${!list ? html`<div class="row muted" style="padding:12px"><span class="spinner"></span>Cargando historial…</div>`
+          : rows.length ? rows.map((c) => html`<div class=${'list-row' + (sel && sel.id === c.id ? ' on' : '')} onClick=${() => setSel(c)} onDblClick=${() => { setSel(c); go(c); }}>
+            <${Icon} name=${open.has(c.id) ? 'monitor' : 'sparkles'} />
+            <div class="grow" style="min-width:0"><div class="t ellipsis">${c.title}</div>
+              <div class="s ellipsis">${(c.account || '').split('@')[0]}${c.project ? ' · ' + c.project : ''} · ${ago(c.lastAt, now)}${c.prompts != null ? ' · ' + c.prompts + ' msj' : ''}</div></div>
+            ${open.has(c.id) ? html`<span class="chip ok">abierta</span>` : null}
+          </div>`) : indexing ? html`<div class="row muted" style="padding:12px"><span class="spinner"></span>Indexando el historial (${indexing.done}/${indexing.total})…</div>`
+          : html`<div class="muted" style="padding:12px">Nada coincide.</div>`}
+      </div>
+    </div>
   <//>`;
 }
 
@@ -436,6 +517,48 @@ function Settings() {
       <${IntegrationList} integration=${integration} />
       <div><${Btn} icon="plug" kind="primary" busy=${busy} onClick=${connect}>Conectar todas<//></div>
     <//>
+    ${REMOTE ? html`<${Field} label="Este dispositivo" hint="Entraste desde otro dispositivo. El acceso remoto se configura en el PC.">
+      <div><${Btn} icon="log-out" onClick=${logoutDevice}>Cerrar sesión en este dispositivo<//></div>
+    <//>` : html`<${RemoteAccess} />`}
+  <//>`;
+}
+
+// Access from the phone: password, on/off, the addresses to open and the signed-in devices.
+function RemoteAccess() {
+  const live = useStore((s) => s.remote);
+  const [info, setInfo] = useState(null);
+  const [pw, setPw] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { api.get('/api/remote').then(setInfo).catch(() => {}); }, []);
+  const r = live || info;
+  if (!r) return null;
+  const setPassword = async () => {
+    setBusy(true);
+    const out = await attempt(() => api.post('/api/remote/password', { password: pw }), r.hasPassword ? 'Contraseña cambiada: los dispositivos deben entrar de nuevo' : 'Contraseña guardada');
+    setBusy(false);
+    if (out) { setInfo(out); setState({ remote: out }); setPw(''); }
+  };
+  const toggle = async (v) => { const out = await attempt(() => api.put('/api/remote', { enabled: v })); if (out) { setInfo(out); setState({ remote: out }); } };
+  const revoke = async (d) => { await attempt(() => api.del('/api/remote/devices/' + d.id), 'Sesión cerrada en ' + d.name); const out = await api.get('/api/remote'); setInfo(out); setState({ remote: out }); };
+  const now = Date.now();
+  return html`<${Field} label="Acceso desde el teléfono" hint="Abre Bridge desde el navegador de tu teléfono para ver tus sesiones, su historial y escribirles. Pide esta contraseña en cada dispositivo nuevo. Va por tu red local sin cifrar: úsalo en redes de confianza o por una VPN.">
+    <div class="col" style="gap:10px">
+      <div class="row wrap">
+        <input class="input" type="password" autocomplete="new-password" style="max-width:260px" value=${pw} placeholder=${r.hasPassword ? 'Nueva contraseña' : 'Contraseña (mín. 8 caracteres)'} onInput=${(e) => setPw(e.target.value)} />
+        <${Btn} busy=${busy} disabled=${pw.length < 8} onClick=${setPassword}>${r.hasPassword ? 'Cambiar' : 'Guardar'}<//>
+      </div>
+      <${Switch} checked=${r.enabled} onChange=${toggle} label=${r.enabled ? (r.listening ? 'Activado' : 'Activado · iniciando…') : 'Desactivado'} />
+      ${r.error ? html`<div class="notice bad"><${Icon} name="alert" />${r.error}</div>` : null}
+      ${r.enabled ? html`<div class="card">
+        ${r.urls.length ? r.urls.map((u) => html`<div class="list-row" style="cursor:default"><${Icon} name="phone" /><div class="grow"><div class="t mono">${u.url}</div><div class="s">${u.name}</div></div><${CopyBtn} text=${u.url} /></div>`)
+          : html`<div class="list-row" style="cursor:default"><span class="muted">No encontré una red. Conéctate a un Wi-Fi.</span></div>`}
+      </div>
+      <div class="hint muted" style="font-size:12px">Abre esa dirección en el teléfono, conectado al mismo Wi-Fi. Si no carga, el firewall de Windows está bloqueando la conexión: en redes marcadas como públicas hace falta permitir Node.js (requiere administrador) o usar una VPN.</div>` : null}
+      ${r.devices.length ? html`<div class="card">${r.devices.map((d) => html`<div class="list-row" style="cursor:default">
+        <${Icon} name="phone" /><div class="grow"><div class="t">${d.name}</div><div class="s">${d.ip || ''} · visto ${ago(d.lastSeen || d.createdAt, now)}</div></div>
+        <${Btn} size="sm" icon="log-out" onClick=${() => revoke(d)}>Cerrar sesión<//>
+      </div>`)}</div>` : null}
+    </div>
   <//>`;
 }
 

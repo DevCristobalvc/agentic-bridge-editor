@@ -1,6 +1,6 @@
 // Agentic Bridge — app shell: rail, top bar, command palette, overlays, toasts.
 import { html, render, useEffect, useMemo, useRef, useState } from '/vendor/htm-preact.js';
-import { boot, useStore, api, getState, setState, on } from './api.js';
+import { boot, useStore, api, getState, setState, on, REMOTE, logoutDevice } from './api.js';
 import { Icon, IconBtn, Btn, useLocal, toast, attempt } from './ui.js';
 import { useRoute, navigate } from './router.js';
 import { newSession, newRoom, openSettings, newTerminal } from './dialogs.js';
@@ -78,6 +78,7 @@ function Rail({ route, collapsed, setCollapsed }) {
     </div>
     <div class="rail-foot nav">
       <a href="javascript:void 0" onClick=${openSettings} title="Ajustes"><${Icon} name="settings" /><span class="label">Ajustes</span></a>
+      ${REMOTE ? html`<a href="javascript:void 0" onClick=${logoutDevice} title="Cerrar sesión en este dispositivo"><${Icon} name="log-out" /><span class="label">Cerrar sesión</span></a>` : null}
       <a href="javascript:void 0" onClick=${() => setCollapsed(!collapsed)} title=${collapsed ? 'Expandir' : 'Contraer'}><${Icon} name="sidebar" /><span class="label">${collapsed ? 'Expandir' : 'Contraer'}</span></a>
     </div>
   </nav>`;
@@ -165,6 +166,7 @@ function App() {
   const connected = useStore((s) => s.connected);
   const [collapsed, setCollapsed] = useLocal('railCollapsed', false);
   const [palette, setPalette] = useState(false);
+  const [navOpen, setNavOpen] = useState(false);
   const nav = NAV.find((n) => n.id === route.view) || NAV[1];
   const View = VIEWS[route.view] || Home;
 
@@ -180,11 +182,15 @@ function App() {
   useEffect(() => { document.title = nav.label + ' · Agentic Bridge'; }, [nav]);
   // A dialog left open does not follow you to another view.
   useEffect(() => { if (getState().overlay) setState({ overlay: null }); }, [route.view, route.param]);
+  // On the phone the navigation is a panel that closes once you pick a view.
+  useEffect(() => setNavOpen(false), [route.view, route.param]);
 
-  return html`<div class=${'app' + (collapsed ? ' collapsed' : '')}>
+  return html`<div class=${'app' + (collapsed ? ' collapsed' : '') + (navOpen ? ' nav-open' : '') + (REMOTE ? ' remote' : '')}>
     <${Rail} route=${route} collapsed=${collapsed} setCollapsed=${setCollapsed} />
+    ${navOpen ? html`<div class="nav-scrim" onClick=${() => setNavOpen(false)}></div>` : null}
     <main class="main">
       <header class="topbar">
+        <span class="nav-toggle"><${IconBtn} icon="menu" title="Menú" onClick=${() => setNavOpen(!navOpen)} /></span>
         <h1>${nav.title}</h1>
         <button type="button" class="search-trigger" onClick=${() => setPalette(true)} aria-label="Buscar (Ctrl+K)">
           <${Icon} name="search" /><span>Buscar o ejecutar…</span><kbd>Ctrl K</kbd>
@@ -192,7 +198,7 @@ function App() {
         <span class="conn" title=${connected ? 'Conectado al hub' : 'Reconectando con el hub…'}>
           <span class=${'dot ' + (connected ? 'busy' : 'bad')}></span>${connected ? 'En vivo' : 'Reconectando'}
         </span>
-        <${Btn} kind="primary" icon="plus" onClick=${() => newSession()}>Nueva sesión<//>
+        <span class="new-session"><${Btn} kind="primary" icon="plus" onClick=${() => newSession()}>Nueva sesión<//></span>
       </header>
       <section class=${'view' + (FIXED.has(route.view) ? ' fixed' : '')}>
         <${View} route=${route} />

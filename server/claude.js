@@ -61,12 +61,61 @@ function childEnv(configPath, extra) {
   return env;
 }
 
-// Open a session in a new Windows Terminal tab (or a plain console when wt is missing).
-function launchExternal({ name, configPath, cwd, resumeId, systemPromptFile, model, permissionMode }) {
-  const args = resumeId ? ['--resume', resumeId] : ['-n', name];
+// The arguments of an interactive session opened outside the editor. New sessions get their id
+// up front, so Bridge can show their mirror before they register.
+function externalArgs({ name, sessionId, resumeId, systemPromptFile, model, permissionMode, prompt }) {
+  const args = resumeId ? ['--resume', resumeId] : ['--session-id', sessionId, '-n', name];
   if (systemPromptFile) args.push('--append-system-prompt-file', systemPromptFile);
   if (model) args.push('--model', model);
   if (permissionMode) args.push('--permission-mode', permissionMode);
+  if (prompt && !resumeId) args.push('--', String(prompt));
+  return args;
+}
+
+// C:\Users\me\x -> /c/Users/me/x, the form Git Bash expects.
+function msysPath(p) {
+  const abs = path.resolve(p);
+  const m = /^([A-Za-z]):[\\/]?(.*)$/.exec(abs);
+  return m ? '/' + m[1].toLowerCase() + '/' + m[2].replace(/\\/g, '/') : abs.replace(/\\/g, '/');
+}
+
+// Open a session in its own Git Bash window (mintty), the way you would by hand: Claude runs in
+// a login shell, and when it exits the window stays open as a normal Git Bash.
+function launchGitBash(opts) {
+  if (process.platform !== 'win32') throw new Error('Git Bash solo existe en Windows.');
+  const bash = require('./shells').gitBash();
+  if (!bash) throw new Error('No encontré Git Bash (Git for Windows).');
+  const gitRoot = path.dirname(path.dirname(bash));
+  const mintty = path.join(gitRoot, 'usr', 'bin', 'mintty.exe');
+  if (!fs.existsSync(mintty)) throw new Error('No encontré mintty.exe en ' + gitRoot);
+  const c = claudeCommand();
+  const q = (s) => "'" + String(s).replace(/'/g, "'\\''") + "'";
+  // Every value goes in single quotes: names, prompts and folders never reach the shell as code.
+  const script = [
+    '# Agentic Bridge: ' + String(opts.name || 'claude').replace(/[\r\n]/g, ' '),
+    'cd ' + q(msysPath(opts.cwd)) + ' || exit 1',
+    isDefaultConfig(opts.configPath) ? 'unset CLAUDE_CONFIG_DIR' : 'export CLAUDE_CONFIG_DIR=' + q(path.resolve(opts.configPath).replace(/\\/g, '/')),
+    [q(msysPath(c.file))].concat(c.prefix.map(q), externalArgs(opts).map(q)).join(' '),
+    'exec bash --login -i',
+    '',
+  ].join('\n');
+  const { DATA_DIR } = require('./config');
+  const file = path.join(DATA_DIR, 'agents', 'gitbash-' + Date.now().toString(36) + '.sh');
+  fs.writeFileSync(file, script);
+  const env = Object.assign(childEnv(opts.configPath), { CHERE_INVOKING: '1', MSYSTEM: process.env.MSYSTEM || 'MINGW64' });
+  const icon = path.join(gitRoot, 'git-bash.exe');
+  const args = ['-t', String(opts.name || 'claude').slice(0, 60)];
+  if (fs.existsSync(icon)) args.push('-i', icon);
+  args.push('/usr/bin/bash', '--login', msysPath(file));
+  spawn(mintty, args, { cwd: opts.cwd, env, detached: true, stdio: 'ignore' }).unref();
+  // The script is read when bash starts; remove it a bit later.
+  setTimeout(() => fs.rm(file, { force: true }, () => {}), 60000).unref();
+}
+
+// Open a session in a new Windows Terminal tab (or a plain console when wt is missing).
+function launchExternal(opts) {
+  const { name, configPath, cwd } = opts;
+  const args = externalArgs(opts);
   const env = childEnv(configPath);
   const wt = path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'WindowsApps', 'wt.exe');
   const [file, argv] = claudeArgv(args);
@@ -79,4 +128,4 @@ function launchExternal({ name, configPath, cwd, resumeId, systemPromptFile, mod
   spawn(wt, ['-w', '0', 'new-tab', '--title', name || 'claude', '-d', cwd, file, ...argv].map(wtArg), { cwd, env, detached: true, stdio: 'ignore' }).unref();
 }
 
-module.exports = { claudeBin, claudeArgv, childEnv, isDefaultConfig, launchExternal };
+module.exports = { claudeBin, claudeArgv, childEnv, isDefaultConfig, launchExternal, launchGitBash };

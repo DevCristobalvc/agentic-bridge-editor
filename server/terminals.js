@@ -162,6 +162,40 @@ function typeInto(sessionId, text) {
   return true;
 }
 
+// A prompt the person wrote in the chat view (or from the phone). Unlike typeInto it is sent even
+// right after someone typed in the terminal: it is that same person. Newlines go as "\" + Enter,
+// Claude Code's line continuation, each piece a moment apart (in one burst Claude Code takes it
+// for a paste and keeps the "\"); Antigravity gets them as spaces.
+function submit(sessionId, text) {
+  const t = bySession(sessionId) || byConversation(sessionId);
+  if (!t) return false;
+  const lines = t.kind === 'claude' ? text.split(/\r?\n/) : [text.replace(/\r?\n/g, ' ')];
+  const steps = [];
+  lines.forEach((line, i) => {
+    steps.push(line);
+    if (i < lines.length - 1) steps.push('\\', '\r');
+  });
+  steps.push('\r');
+  t.draft = false;
+  let i = 0;
+  const next = () => {
+    if (!t.alive || i >= steps.length) return;
+    t.proc.write(steps[i++]);
+    setTimeout(next, i === steps.length - 1 ? 200 : 70);
+  };
+  next();
+  return true;
+}
+
+const KEY_SEQ = { enter: '\r', esc: '\x1b', tab: '\t', 'shift-tab': '\x1b[Z', backspace: '\x7f', space: ' ', up: '\x1b[A', down: '\x1b[B', right: '\x1b[C', left: '\x1b[D' };
+function sendKeys(sessionId, spec) {
+  const t = bySession(sessionId) || byConversation(sessionId);
+  if (!t) return false;
+  const seq = String(spec).split(/\s+/).filter(Boolean).map((k) => KEY_SEQ[k.toLowerCase()] || (k.length === 1 ? k : '')).join('');
+  if (seq) t.proc.write(seq);
+  return true;
+}
+
 function killAll() { for (const t of terms.values()) { try { t.proc.kill(); } catch (e) {} } }
 
 function rename(id, name) {
@@ -192,4 +226,4 @@ function byConversation(conversationId) {
 
 function get(id) { const t = terms.get(id); return t ? publicView(t) : null; }
 
-module.exports = { available: () => !!pty, list, get, create, attach, kill, rename, bySession, byConversation, typeInto, killAll, claimAgyConversations };
+module.exports = { available: () => !!pty, list, get, create, attach, kill, rename, bySession, byConversation, typeInto, submit, sendKeys, killAll, claimAgyConversations };

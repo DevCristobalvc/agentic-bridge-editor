@@ -112,6 +112,7 @@ function SessionCard({ s, waiters, now }) {
     ${last ? html`<div class="preview"><b>${lastWho}:</b> ${last.text}</div>` : null}
     <div class="actions">
       ${s.terminalId ? html`<${Btn} size="sm" kind="primary" icon="terminal" onClick=${() => navigate('/terminals/' + s.terminalId)}>Abrir terminal<//>` : null}
+      ${!s.terminalId && s.alive && s.source === 'claude' ? html`<${Btn} size="sm" kind="primary" icon="message" onClick=${() => navigate('/terminals/s.' + s.id)}>Abrir chat<//>` : null}
       <${Btn} size="sm" icon="eye" onClick=${() => navigate('/sessions/' + s.id)}>Conversación<//>
       ${s.alive ? html`<${Btn} size="sm" icon="send" onClick=${() => messageSession(s)}>Mensaje<//>` : null}
       ${!s.alive && (s.configPath || s.source === 'antigravity') ? html`<${Btn} size="sm" icon="play" onClick=${() => resumeHere(s)}>Retomar aquí<//>` : null}

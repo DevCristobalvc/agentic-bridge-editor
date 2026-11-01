@@ -2,6 +2,13 @@
 import { useEffect, useRef, useState } from '/vendor/htm-preact.js';
 
 export const TOKEN = document.querySelector('meta[name="bridge-token"]').content;
+// Opened from another device (the phone): requests are authorized by the device cookie, not the token.
+export const REMOTE = !TOKEN;
+
+export async function logoutDevice() {
+  await fetch('/auth/logout', { method: 'POST', headers: { 'x-bridge-token': '' } }).catch(() => {});
+  location.replace('/');
+}
 
 async function request(method, url, body, opts = {}) {
   const headers = { 'x-bridge-token': TOKEN };
@@ -15,6 +22,8 @@ async function request(method, url, body, opts = {}) {
     headers['content-type'] = 'application/json';
   }
   const res = await fetch(url, { method, headers, body: payload });
+  // A device signed out from the PC goes back to the login page.
+  if (REMOTE && res.status === 401) { location.replace('/'); throw new Error('Sesión cerrada'); }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw Object.assign(new Error(data.error || 'Error ' + res.status), { status: res.status });
   return data;
@@ -137,6 +146,7 @@ function handle(ev) {
     case 'connections': setState({ connections: data }); break;
     case 'boards': setState({ boards: data }); break;
     case 'unread': setState((s) => ({ sessions: s.sessions.map((x) => (x.id === data.sessionId ? Object.assign({}, x, { unread: data.count }) : x)) })); break;
+    case 'remote': setState({ remote: data }); break;
     default: break;
   }
   fire(type, data);
@@ -155,8 +165,10 @@ function connect() {
     if (resync) boot(); // resync whatever we missed while disconnected
   };
   ws.onmessage = (e) => { try { handle(JSON.parse(e.data)); } catch (err) { console.error(err); } };
-  ws.onclose = () => {
+  ws.onclose = (e) => {
     setState({ connected: false });
+    // Signed out from the PC (or remote access turned off): check the session before retrying.
+    if (REMOTE && e.code === 4401) { api.get('/api/state').catch(() => {}); }
     setTimeout(connect, Math.min(8000, 500 * 2 ** retry++));
   };
 }

@@ -1,5 +1,6 @@
 'use strict';
-// Agentic Bridge hub: HTTP API + WebSocket events + static web app, bound to 127.0.0.1 only.
+// Agentic Bridge hub: HTTP API + WebSocket events + static web app, bound to 127.0.0.1. A second
+// listener for other devices (the phone) runs only when turned on in Settings, behind a login.
 
 const fs = require('fs');
 const path = require('path');
@@ -24,8 +25,10 @@ const secrets = require('./secrets');
 const connections = require('./connections');
 const history = require('./history');
 const boards = require('./boards');
+const wake = require('./wake');
+const remote = require('./remote');
 const { withIcon, TONES } = require('./roles');
-const { uid, clip, slug } = require('./util');
+const { uid, clip, slug, uuid } = require('./util');
 
 const VERSION = require('../package.json').version;
 const ORIGINS = new Set(['http://127.0.0.1:' + PORT, 'http://localhost:' + PORT]);
@@ -101,9 +104,12 @@ function refreshBoards() {
 
 // ---------- websocket fan-out ----------
 const clients = new Set();
+const remoteSockets = new Set();
 function broadcast(msg) {
   const raw = JSON.stringify(msg);
-  for (const ws of clients) { try { ws.send(raw); } catch (e) {} }
+  // How remote access is set up is shown on the PC only.
+  const localOnly = msg.type === 'remote';
+  for (const ws of clients) { if (localOnly && remoteSockets.has(ws)) continue; try { ws.send(raw); } catch (e) {} }
 }
 store.bus.on('event', (ev) => {
   if (ev.type === 'projects') broadcast({ type: 'projects', data: projects.list() });
@@ -299,17 +305,75 @@ route('POST', '/api/sessions', async (req) => {
   if (!fs.existsSync(cwd)) fs.mkdirSync(cwd, { recursive: true });
   const prompt = rolePrompt(b.roleId);
   const permissionMode = ['default', 'acceptEdits', 'plan', 'bypassPermissions'].includes(b.permissionMode) ? b.permissionMode : null;
-  if (b.where === 'external') {
+  if (b.where === 'external' || b.where === 'gitbash') {
     let sysFile = null;
     if (prompt) { sysFile = path.join(DATA_DIR, 'agents', 'ext-' + uid() + '.md'); fs.writeFileSync(sysFile, prompt); }
-    claude.launchExternal({ name, configPath, cwd, resumeId: b.resumeId, systemPromptFile: sysFile, model: b.model, permissionMode });
-    return { ok: true, external: true };
+    const resumeId = b.resumeId && /^[\w-]{8,80}$/.test(b.resumeId) ? b.resumeId : null;
+    const sessionId = resumeId || uuid();
+    const opts = { name, configPath, cwd, resumeId, sessionId, systemPromptFile: sysFile, model: b.model, permissionMode, prompt: String(b.prompt || '').trim() || null };
+    if (b.where === 'gitbash') claude.launchGitBash(opts);
+    else claude.launchExternal(opts);
+    if (!resumeId && name) store.aliases.update((a) => Object.assign({}, a, { [sessionId]: name }));
+    return { ok: true, external: true, where: b.where, sessionId };
   }
   const env = await secrets.envFor(b.secretIds);
   const term = terminals.create('claude', { name, configPath, cwd, rolePrompt: prompt, roleId: b.roleId, model: b.model, permissionMode, resumeId: b.resumeId, prompt: b.prompt, env, cols: b.cols, rows: b.rows });
   if (!b.resumeId && name) store.aliases.update((a) => Object.assign({}, a, { [term.sessionId]: name }));
   return { ok: true, terminal: term };
 });
+// ---------- mirrors: any session open on this PC, read live and written to like at its keyboard ----------
+route('GET', '/api/sessions/:id/feed', (req, p, url) => {
+  const from = url.searchParams.has('from') ? Number(url.searchParams.get('from')) : NaN;
+  return history.feed(p.id, from, Number(url.searchParams.get('limit')) || 300);
+});
+
+const PROMPT_ERRORS = {
+  draft: 'Hay texto a medio escribir en esa terminal del PC. Envíalo o bórralo allá y vuelve a intentar.',
+  'no-prompt': 'La sesión está mostrando una pregunta o un menú (por ejemplo, un permiso). Ábrela en «Pantalla» y respóndelo.',
+  'not-echoed': 'Escribí el mensaje pero la sesión no lo mostró; revisa su pantalla.',
+  busy: 'Estoy escribiendo en esa sesión; espera un momento.',
+  timeout: 'La consola de la sesión no respondió a tiempo.',
+  unsupported: 'Solo puedo escribir en sesiones abiertas en este equipo con Windows.',
+};
+function promptError(r) {
+  if (/^attach-/.test(r.reason)) return 'No pude conectarme a la consola de esa sesión (' + r.reason + '). ¿Corre como administrador o en otra cuenta de Windows?';
+  return PROMPT_ERRORS[r.reason] || 'No pude escribir en la sesión (' + r.reason + (r.detail ? ': ' + r.detail : '') + ').';
+}
+function liveSession(id) {
+  const s = findSession(id);
+  if (!s || !s.alive) throw fail(404, 'La sesión no está abierta.');
+  return s;
+}
+
+route('POST', '/api/sessions/:id/prompt', async (req, p) => {
+  const b = await jsonBody(req, 256 * 1024);
+  const text = String(b.text || '').replace(/\r\n?/g, '\n').replace(/^\n+/, '').replace(/\s+$/, '');
+  if (!text) throw fail(400, 'Escribe algo primero.');
+  if (text.length > 12000) throw fail(400, 'El mensaje es muy largo (máximo 12.000 caracteres).');
+  const s = liveSession(p.id);
+  if (terminals.submit(s.id, text)) return { ok: true, via: 'terminal' };
+  if (s.source !== 'claude' || !s.pid) throw fail(400, 'Solo puedo escribirle a sesiones de Claude Code abiertas en este equipo.');
+  const r = await wake.prompt(s.pid, text);
+  if (!r.ok) throw fail(409, promptError(r));
+  return { ok: true, via: 'console' };
+});
+route('GET', '/api/sessions/:id/screen', async (req, p) => {
+  const s = liveSession(p.id);
+  if (!s.pid) throw fail(400, 'Esta sesión no tiene una consola que pueda leer.');
+  const r = await wake.screen(s.pid);
+  if (!r.ok) throw fail(409, promptError(r));
+  return { lines: r.lines, prompt: r.prompt };
+});
+route('POST', '/api/sessions/:id/keys', async (req, p) => {
+  const keys = String((await jsonBody(req)).keys || '').trim().slice(0, 200);
+  if (!/^(\S{1}|enter|esc|tab|shift-tab|backspace|space|up|down|left|right)( (\S{1}|enter|esc|tab|shift-tab|backspace|space|up|down|left|right))*$/i.test(keys)) throw fail(400, 'Teclas no válidas.');
+  const s = liveSession(p.id);
+  if (terminals.sendKeys(s.id, keys)) return { ok: true };
+  const r = await wake.keys(s.pid, keys);
+  if (!r.ok) throw fail(409, promptError(r));
+  return { ok: true };
+});
+
 route('POST', '/api/sessions/:id/message', async (req, p) => {
   const b = await jsonBody(req);
   const s = findSession(p.id);
@@ -318,6 +382,12 @@ route('POST', '/api/sessions/:id/message', async (req, p) => {
   rooms.postAsHuman(room.meta.id, String(b.text || ''), b.attachments || []);
   return { ok: true, roomId: room.meta.id };
 });
+
+// access from the phone (configured only from this PC: remote devices get a 403 here)
+route('GET', '/api/remote', () => remote.status());
+route('PUT', '/api/remote', async (req) => { const out = remote.configure(await jsonBody(req)); syncRemote(); return out; });
+route('POST', '/api/remote/password', async (req) => { const out = remote.setPassword((await jsonBody(req)).password); closeRemoteSockets(); return out; });
+route('DELETE', '/api/remote/devices/:id', (req, p) => { const ok = remote.revoke(p.id); closeRemoteSockets(); return { ok }; });
 
 // accounts & integration
 route('GET', '/api/integration', () => connect.status());
@@ -687,9 +757,10 @@ route('POST', '/api/bridge/join', async (req) => {
 });
 
 // ---------- request handling ----------
-function serveStatic(req, res, pathname) {
+function serveStatic(req, res, pathname, isRemote) {
   if (pathname === '/' || pathname === '/index.html') {
-    const html = fs.readFileSync(path.join(WEB_DIR, 'index.html'), 'utf8').replace('%%TOKEN%%', TOKEN);
+    // Remote pages never carry the local token: their requests are authorized by the device cookie.
+    const html = fs.readFileSync(path.join(WEB_DIR, 'index.html'), 'utf8').replace('%%TOKEN%%', isRemote ? '' : TOKEN);
     return send(res, 200, TYPES['.html'], html);
   }
   let file = null;
@@ -714,19 +785,37 @@ function serveStatic(req, res, pathname) {
   });
 }
 
-async function handle(req, res) {
-  // Answer only requests addressed to this machine by name (blocks DNS rebinding),
-  // and only from our own origin when a browser says where it came from.
-  if (!HOST_RE.test(req.headers.host || '')) return send(res, 403, 'text/plain', 'forbidden');
-  if (req.headers.origin && !ORIGINS.has(req.headers.origin)) return send(res, 403, 'text/plain', 'forbidden origin');
+const REMOTE_HEADERS = { 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer' };
+
+async function handle(req, res, isRemote) {
+  if (isRemote) {
+    // The network listener: any host name (LAN address, VPN, tunnel), but same-origin only,
+    // and every API call needs a signed-in device.
+    if (!remote.sameOrigin(req)) return send(res, 403, 'text/plain', 'forbidden origin');
+    for (const [k, v] of Object.entries(REMOTE_HEADERS)) res.setHeader(k, v);
+  } else {
+    // Answer only requests addressed to this machine by name (blocks DNS rebinding),
+    // and only from our own origin when a browser says where it came from.
+    if (!HOST_RE.test(req.headers.host || '')) return send(res, 403, 'text/plain', 'forbidden');
+    if (req.headers.origin && !ORIGINS.has(req.headers.origin)) return send(res, 403, 'text/plain', 'forbidden origin');
+  }
   const url = new URL(req.url, 'http://localhost');
   const pathname = url.pathname;
+  if (isRemote && pathname.startsWith('/auth/')) return handleAuth(req, res, pathname);
   if (!pathname.startsWith('/api/')) {
     if (req.method !== 'GET') return send(res, 405, 'text/plain', 'method not allowed');
-    return serveStatic(req, res, pathname);
+    if (isRemote && (pathname === '/' || pathname === '/index.html') && !remote.deviceOf(req)) return serveStatic(req, res, '/login.html', true);
+    return serveStatic(req, res, pathname, isRemote);
   }
-  const token = req.headers['x-bridge-token'] || url.searchParams.get('t');
-  if (token !== TOKEN) return json(res, 401, { error: 'Token inválido' });
+  if (isRemote) {
+    if (!remote.deviceOf(req)) return json(res, 401, { error: 'Inicia sesión de nuevo.' });
+    // A cross-site page could not set this header without a preflight we never answer.
+    if (req.method !== 'GET' && !req.headers.origin && req.headers['x-bridge-token'] === undefined) return json(res, 403, { error: 'Petición no permitida' });
+    if (remote.forbidden(req.method, pathname)) return json(res, 403, { error: 'Esto solo se puede hacer desde el PC.' });
+  } else {
+    const token = req.headers['x-bridge-token'] || url.searchParams.get('t');
+    if (token !== TOKEN) return json(res, 401, { error: 'Token inválido' });
+  }
   for (const r of routes) {
     if (r.method !== req.method) continue;
     const m = r.re.exec(pathname);
@@ -744,32 +833,86 @@ async function handle(req, res) {
   return json(res, 404, { error: 'Ruta desconocida' });
 }
 
+async function handleAuth(req, res, pathname) {
+  if (req.method !== 'POST') return send(res, 405, 'text/plain', 'method not allowed');
+  try {
+    if (pathname === '/auth/login') {
+      const b = await jsonBody(req, 4096);
+      const cookie = remote.login(req, b.password);
+      return send(res, 200, 'application/json; charset=utf-8', JSON.stringify({ ok: true }), { 'Set-Cookie': cookie });
+    }
+    if (pathname === '/auth/logout') return send(res, 200, 'application/json; charset=utf-8', JSON.stringify({ ok: true }), { 'Set-Cookie': remote.logout(req) });
+    return json(res, 404, { error: 'Ruta desconocida' });
+  } catch (e) {
+    return json(res, e.status || 500, { error: e.message });
+  }
+}
+
 const server = http.createServer((req, res) => {
-  handle(req, res).catch((e) => { console.error(e); if (!res.headersSent) json(res, 500, { error: e.message }); });
+  handle(req, res, false).catch((e) => { console.error(e); if (!res.headersSent) json(res, 500, { error: e.message }); });
 });
 
 const wss = new WebSocketServer({ noServer: true });
-server.on('upgrade', (req, socket, head) => {
+// Sockets opened from other devices (remoteSockets, above) are closed when access is turned off
+// or devices are signed out; a device that is still signed in just reconnects.
+function closeRemoteSockets() { for (const ws of remoteSockets) { try { ws.close(4401, 'sesión cerrada'); } catch (e) {} } }
+function upgrade(req, socket, head, isRemote) {
   const url = new URL(req.url, 'http://localhost');
-  const okOrigin = !req.headers.origin || ORIGINS.has(req.headers.origin);
-  if (!HOST_RE.test(req.headers.host || '') || !okOrigin || url.searchParams.get('t') !== TOKEN) {
+  const allowed = isRemote
+    ? remote.sameOrigin(req) && !!remote.deviceOf(req)
+    : HOST_RE.test(req.headers.host || '') && (!req.headers.origin || ORIGINS.has(req.headers.origin)) && url.searchParams.get('t') === TOKEN;
+  if (!allowed) {
     socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
     socket.destroy();
     return;
   }
   wss.handleUpgrade(req, socket, head, (ws) => {
+    if (isRemote) { remoteSockets.add(ws); ws.on('close', () => remoteSockets.delete(ws)); }
     const term = /^\/ws\/term\/([\w-]+)$/.exec(url.pathname);
     if (term) { terminals.attach(term[1], ws); return; }
     clients.add(ws);
     ws.on('close', () => clients.delete(ws));
     ws.send(JSON.stringify({ type: 'hello', data: { version: VERSION } }));
   });
-});
+}
+server.on('upgrade', (req, socket, head) => upgrade(req, socket, head, false));
 
 server.on('error', (e) => {
   console.error(e.code === 'EADDRINUSE' ? 'El puerto ' + PORT + ' ya está en uso: ¿Agentic Bridge ya está abierto? Usa BRIDGE_PORT para otro puerto.' : e.message);
   process.exit(1);
 });
+
+// ---------- the network listener for other devices (off unless turned on in Settings) ----------
+let remoteServer = null;
+function syncRemote() {
+  const want = remote.config();
+  const running = remoteServer && remoteServer.address();
+  if (remoteServer && (!want.enabled || (running && running.port !== want.port))) {
+    const s = remoteServer;
+    remoteServer = null;
+    s.close();
+    // Signed-in phones keep open sockets; close them so turning it off takes effect now.
+    if (s.closeAllConnections) s.closeAllConnections();
+    remote.setListenState({ listening: false, error: null });
+    closeRemoteSockets();
+  }
+  if (!want.enabled || remoteServer) { broadcast({ type: 'remote', data: remote.status() }); return; }
+  const s = http.createServer((req, res) => {
+    handle(req, res, true).catch((e) => { console.error(e); if (!res.headersSent) json(res, 500, { error: e.message }); });
+  });
+  s.on('upgrade', (req, socket, head) => upgrade(req, socket, head, true));
+  s.on('error', (e) => {
+    remote.setListenState({ listening: false, error: e.code === 'EADDRINUSE' ? 'El puerto ' + want.port + ' ya está en uso.' : e.message });
+    if (remoteServer === s) remoteServer = null;
+    broadcast({ type: 'remote', data: remote.status() });
+  });
+  s.listen(want.port, '0.0.0.0', () => {
+    remote.setListenState({ listening: true, error: null });
+    console.log('  ▸ acceso desde otros dispositivos en el puerto ' + want.port);
+    broadcast({ type: 'remote', data: remote.status() });
+  });
+  remoteServer = s;
+}
 
 rooms.load();
 refresh(true);
@@ -784,6 +927,7 @@ server.listen(PORT, '127.0.0.1', () => {
   fs.writeFileSync(path.join(DATA_DIR, 'hub.json'), JSON.stringify({ port: PORT, pid: process.pid, root: ROOT }, null, 1));
   console.log('\n  ◆ Agentic Bridge ' + VERSION + ' — el editor web4');
   console.log('  ▸ ' + url + '\n  ▸ datos: ' + DATA_DIR + '\n');
+  syncRemote();
   if (process.argv.includes('--open')) {
     if (process.platform === 'win32') execFile('cmd.exe', ['/c', 'start', '', url], () => {});
     else execFile('xdg-open', [url], () => {});
@@ -793,6 +937,7 @@ server.listen(PORT, '127.0.0.1', () => {
 function shutdown() {
   terminals.killAll();
   agents.killAll();
+  wake.stop();
   process.exit(0);
 }
 process.on('SIGINT', shutdown);

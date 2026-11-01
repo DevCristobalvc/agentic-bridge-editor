@@ -390,54 +390,86 @@ function resultText(c) {
   return '';
 }
 
+// Turns transcript lines into reader entries. A tool result lands on the call it answers; when
+// that call came in an earlier read (the live feed), it is reported in st.results instead.
+function readLines(text, st) {
+  for (const line of text.split('\n')) {
+    if (!line || line.charCodeAt(0) !== 123) continue;
+    let ob;
+    try { ob = JSON.parse(line); } catch (e) { continue; }
+    if (!ob || ob.isSidechain || ob.isMeta || !ob.message) continue;
+    const at = ob.timestamp || null;
+    const content = ob.message.content;
+    if (ob.type === 'user') {
+      if (isToolResult(content)) {
+        for (const b of content) {
+          if (b.type !== 'tool_result') continue;
+          const result = clip(resultText(b.content), 4000);
+          const target = st.byTool.get(b.tool_use_id);
+          if (target) { target.result = result; target.error = !!b.is_error; }
+          else if (st.results) st.results.push({ id: b.tool_use_id, result, error: !!b.is_error });
+        }
+        continue;
+      }
+      const text = textOf(content);
+      // The summary Claude Code writes when it compacts is not something you said: fold it.
+      if (ob.isCompactSummary) { st.entries.push({ role: 'tool', name: 'Compactación', text: 'Aquí se resumió la conversación anterior', input: clip(text, 20000), at }); continue; }
+      const images = Array.isArray(content) ? content.filter((b) => b && b.type === 'image').length : 0;
+      if (text || images) st.entries.push({ role: 'user', text: clip(text, 40000), images, at });
+    } else if (ob.type === 'assistant' && Array.isArray(content)) {
+      for (const b of content) {
+        if (b.type === 'text' && b.text && b.text.trim()) st.entries.push({ role: 'assistant', text: clip(b.text.trim(), 60000), at, model: ob.message.model });
+        else if (b.type === 'tool_use') {
+          const ent = { role: 'tool', id: b.id, name: b.name, text: summarizeInput(b.input), input: clip(JSON.stringify(b.input, null, 2), 6000), at };
+          st.byTool.set(b.id, ent);
+          st.entries.push(ent);
+        }
+      }
+    }
+  }
+}
+
+// Reads complete lines from `from` up to `size`; returns where the last complete line ends, so
+// a line Claude Code is still writing is read next time instead of being lost.
+async function readRange(file, from, size, st) {
+  let offset = from;
+  while (offset < size) {
+    const buf = readFrom(file, offset, size);
+    const lastNl = buf.lastIndexOf(10);
+    if (lastNl === -1) break;
+    readLines(buf.subarray(0, lastNl + 1).toString('utf8'), st);
+    offset += lastNl + 1;
+    await tick();
+  }
+  return offset;
+}
+
 async function transcript(id, opts) {
   const o = opts || {};
   if (o.source === 'antigravity') return Object.assign({ source: 'antigravity' }, antigravity.transcript(id, o.limit || 3000));
   const file = fileOf(id);
   if (!file) return { entries: [], truncated: false, error: 'No encontré el transcript' };
-  const entries = [];
-  const byTool = new Map();
-  const st = fs.statSync(file);
-  let offset = 0;
-  while (offset < st.size) {
-    const buf = readFrom(file, offset, st.size);
-    const lastNl = buf.lastIndexOf(10);
-    const cut = lastNl === -1 ? buf.length : lastNl + 1;
-    for (const line of buf.subarray(0, cut).toString('utf8').split('\n')) {
-      if (!line || line.charCodeAt(0) !== 123) continue;
-      let ob;
-      try { ob = JSON.parse(line); } catch (e) { continue; }
-      if (!ob || ob.isSidechain || ob.isMeta || !ob.message) continue;
-      const at = ob.timestamp || null;
-      const content = ob.message.content;
-      if (ob.type === 'user') {
-        if (isToolResult(content)) {
-          for (const b of content) {
-            if (b.type !== 'tool_result') continue;
-            const target = byTool.get(b.tool_use_id);
-            if (target) { target.result = clip(resultText(b.content), 4000); target.error = !!b.is_error; }
-          }
-          continue;
-        }
-        const text = textOf(content);
-        const images = Array.isArray(content) ? content.filter((b) => b && b.type === 'image').length : 0;
-        if (text || images) entries.push({ role: 'user', text: clip(text, 40000), images, at });
-      } else if (ob.type === 'assistant' && Array.isArray(content)) {
-        for (const b of content) {
-          if (b.type === 'text' && b.text && b.text.trim()) entries.push({ role: 'assistant', text: clip(b.text.trim(), 60000), at, model: ob.message.model });
-          else if (b.type === 'tool_use') {
-            const ent = { role: 'tool', name: b.name, text: summarizeInput(b.input), input: clip(JSON.stringify(b.input, null, 2), 6000), at };
-            byTool.set(b.id, ent);
-            entries.push(ent);
-          }
-        }
-      }
-    }
-    offset += cut;
-    await tick();
-  }
+  const st = { entries: [], byTool: new Map() };
+  const size = fs.statSync(file).size;
+  const end = await readRange(file, 0, size, st);
+  // A final line without its newline yet (a finished file always ends in one).
+  if (end < size) readLines(readFrom(file, end, size).toString('utf8'), st);
   const limit = Math.min(20000, o.limit || 4000);
-  return { source: 'claude', entries: entries.slice(-limit), truncated: entries.length > limit, total: entries.length };
+  return { source: 'claude', entries: st.entries.slice(-limit), truncated: st.entries.length > limit, total: st.entries.length };
+}
+
+// Live view of a conversation. Without `from`: the last `limit` entries and the byte offset they
+// end at. With `from`: only what was written since, plus results of earlier tool calls.
+async function feed(id, from, limit) {
+  const file = fileOf(id);
+  if (!file) return { entries: [], results: [], offset: 0, missing: true };
+  const size = fs.statSync(file).size;
+  const live = Number.isFinite(from) && from >= 0 && from <= size;
+  const st = { entries: [], byTool: new Map(), results: live ? [] : null };
+  const offset = await readRange(file, live ? from : 0, size, st);
+  if (live) return { entries: st.entries, results: st.results, offset };
+  const n = Math.min(5000, limit || 300);
+  return { entries: st.entries.slice(-n), results: [], offset, total: st.entries.length, older: st.entries.length > n };
 }
 
 // ---------- full-text search ----------
@@ -484,4 +516,4 @@ async function search(q, opts) {
   return hits;
 }
 
-module.exports = { scan, ensureFresh, conversations, stats, transcript, search, progress: () => progress, priceOf };
+module.exports = { scan, ensureFresh, conversations, stats, transcript, feed, search, progress: () => progress, priceOf };

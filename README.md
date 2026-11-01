@@ -28,7 +28,7 @@ Web1 te dejó **leer**. Web2, **escribir**. Web3, **poseer**. Web4 es **delegar*
 | **Centro de mando** | Muestra en una pantalla las sesiones vivas, los agentes trabajando, el uso de cada suscripción y la sección "continuar donde quedaste". `Ctrl K` abre la paleta de comandos. |
 | **Sesiones** | Todas las sesiones de Claude Code y Antigravity de todas tus cuentas (`CLAUDE_CONFIG_DIR`), en vivo: estado, carpeta, rama, modelo, contexto, costo, tokens y último mensaje. Puedes renombrarlas, leer su conversación, escribirles, agregarlas a una sala o retomarlas. |
 | **Salas** | Chat de grupo entre tú, agentes con rol y sesiones en vivo de Claude o Antigravity. Incluye menciones con `@handle`, imágenes pegadas con `Ctrl+V`, archivos arrastrados, citas, coordinador, presupuesto y límite de turnos automáticos. |
-| **Terminales** | Claude Code y Antigravity (`agy`) reales, con tu cockpit, más PowerShell, Git Bash, CMD y WSL. Puedes pasarles credenciales como variables de entorno y renombrar las pestañas con doble clic. Bridge despierta a una sesión integrada cuando le llega un mensaje. |
+| **Terminales** | Todas las sesiones abiertas en el PC en un solo lugar. Las que corren en su propia ventana (Git Bash, Windows Terminal, VS Code) aparecen como **espejo**: su conversación completa en vivo, un cuadro para escribirles como si estuvieras en su teclado y la pestaña **Pantalla** con teclas (Esc, Enter, flechas, 1-2-3) para responder menús y permisos. Las sesiones del editor tienen además su terminal real (Claude Code, Antigravity, PowerShell, Git Bash, CMD, WSL), con credenciales como variables de entorno. Una sesión nueva o retomada se abre en el editor, en una **ventana de Git Bash** o en Windows Terminal. |
 | **Historial** | Todas las conversaciones de todas tus cuentas y de Antigravity. Puedes agruparlas por fecha, filtrarlas, **buscar dentro del contenido** y abrirlas en un lector completo (con herramientas y resultados) para retomarlas, exportarlas a Markdown o guardarlas en el Baúl. |
 | **Proyectos** | Un asistente de 3 pasos (proyecto, equipo y contrato) crea `CONTRATO.md`, `.bridge/contract.json`, `todo.md`, los subagentes y la sala del equipo. Cada proyecto tiene pizarra, tablero de tareas con arrastrar y soltar, detalle de tarea con "trabajar en esta tarea", conversaciones de su carpeta, contrato y guardas. |
 | **Pizarras** | **Excalidraw completo** (el editor de excalidraw.com): formas, flechas, texto a mano, imágenes, biblioteca y exportación. Se guarda solo. En un proyecto, las columnas y tarjetas vienen de `todo.md`: si arrastras una tarjeta, su estado se escribe en el archivo, y si un agente cambia el archivo, la tarjeta se mueve sola. Los archivos `.excalidraw` se abren igual. |
@@ -37,6 +37,16 @@ Web1 te dejó **leer**. Web2, **escribir**. Web3, **poseer**. Web4 es **delegar*
 | **Baúl** | Memoria compartida: notas, fragmentos e imágenes con etiquetas, que guardas tú o cualquier sesión (`bridge_vault_save`) y que todas pueden buscar (`bridge_vault_search`). |
 | **Cuentas** | Tus suscripciones de Claude (y crear una nueva cuenta), Antigravity, y las cuentas de **GitHub, Vercel, Azure, Docker, npm, Git, SSH, Kubernetes, AWS, Google Cloud, Supabase, Netlify, Cloudflare, Firebase, Fly.io y Railway**, leídas de sus propios CLI. Puedes iniciar o cerrar sesión, cambiar de cuenta o de suscripción, y guardar **credenciales cifradas**. |
 | **Métricas** | Valor equivalente en API día a día, tokens, días activos y racha. Mapa de cuándo trabajas, uso por modelo, proyecto, cuenta y herramienta, más la ventana de 5 horas y la semana de cada suscripción, con su historial. |
+
+## Desde el teléfono
+
+En **Ajustes › Acceso desde el teléfono** defines una contraseña y lo enciendes. Bridge abre un segundo puerto en tu red (`4014`, o `BRIDGE_REMOTE_PORT`) y te muestra la dirección (por ejemplo `http://192.168.1.20:4014`). Ábrela en el navegador del teléfono, conectado al mismo Wi-Fi o a una VPN, entra con la contraseña y tienes el editor adaptado a pantalla chica: la lista de sesiones del PC, su historial completo, el cuadro para escribirles, sesiones nuevas y retomar conversaciones.
+
+- El puerto local (`127.0.0.1:4004`) no cambia. El de red solo existe mientras está encendido y todo lo que pasa por él exige haber iniciado sesión.
+- Cada dispositivo recibe una cookie aleatoria (`HttpOnly`, `SameSite=Strict`, 30 días); en el PC solo se guarda su hash, y desde Ajustes ves los dispositivos y cierras la sesión de cualquiera. Cambiar la contraseña los cierra todos.
+- La contraseña se guarda con scrypt y sal. Tras 5 intentos fallidos esa dirección queda bloqueada 15 minutos.
+- El token local nunca llega al teléfono. Revelar credenciales y configurar el acceso remoto solo se puede desde el PC.
+- La red local va sin cifrar: úsalo en redes de confianza o por una VPN (por ejemplo Tailscale). En Windows, si el Wi-Fi está marcado como red pública, el firewall bloquea la conexión hasta que se permite Node.js (requiere administrador).
 
 ## Cómo se hablan las sesiones
 
@@ -78,6 +88,7 @@ flowchart LR
 
   Claude Code tiene un mecanismo propio para esto, los [channels](https://code.claude.com/docs/en/channels). Está en vista previa y viene apagado en los planes Team y Enterprise hasta que el dueño de la organización lo activa.
 - **Entrega mientras la sesión trabaja**: se activa en Ajustes y es opcional. Un hook `PostToolUse` entrega los mensajes entre una herramienta y la siguiente. Sin pendientes no hace llamadas de red, y no lee claves ni toca nada interno de Claude Code.
+- **Escribirle a una sesión desde su espejo**: el texto llega como si lo teclearas en su consola. Las líneas se unen con `\` + Enter (la continuación de línea de Claude Code), y Bridge solo escribe si el cuadro de entrada está vacío; si en el PC hay algo a medio escribir o un menú abierto, te lo dice en vez de tocarlo. Un proceso de PowerShell (`server/console-bridge.ps1`) queda abierto para hacerlo en una décima de segundo.
 - **Agentes de sala**: cada agente es una sesión de Claude con memoria propia que Bridge conduce turno a turno (`claude -p --output-format stream-json --resume`). Se activan con `@menciones`, con un tope de turnos automáticos y de presupuesto.
 - **Cockpit**: el statusline (en `integrations/cockpit/`) publica su estado en `~/.claude/crew/` y avisa cuando hay mensajes de Bridge.
 
@@ -132,7 +143,7 @@ La pizarra del proyecto se guarda en `.bridge/board.excalidraw`, un archivo est�
 
 ## Seguridad
 
-- **Red local:** el servidor solo escucha en `127.0.0.1` y rechaza otros `Host` (protección contra DNS rebinding) y otros `Origin`. Exige un token local (`~/.agentic-bridge/token`) en cada llamada a la API y al WebSocket.
+- **Red local:** el servidor escucha en `127.0.0.1` y rechaza otros `Host` (protección contra DNS rebinding) y otros `Origin`. Exige un token local (`~/.agentic-bridge/token`) en cada llamada a la API y al WebSocket. El acceso desde el teléfono es un puerto aparte, apagado por defecto y con login (ver [Desde el teléfono](#desde-el-teléfono)).
 - **Credenciales:** se cifran con AES-256-GCM, y la llave maestra queda protegida con DPAPI de Windows. Una copia de esos archivos no sirve en otro equipo ni con otro usuario de Windows. Bridge nunca se las pasa a los agentes (ni por las salas ni por las herramientas `bridge_*`): solo salen cuando las revelas en el editor o como variables de entorno de una terminal que tú abres. Como pasa con cualquier secreto guardado para tu usuario, un programa que corra con tu mismo usuario de Windows podría abrirlas.
 - **Cuentas externas:** Bridge las lee de sus propios CLI y no guarda sus tokens. Iniciar o cerrar sesión ejecuta el comando oficial de cada CLI en una terminal que ves.
 - **Contenido:** el Markdown se sanitiza con DOMPurify, y los SVG y documentos se sirven con una CSP que impide ejecutar scripts.

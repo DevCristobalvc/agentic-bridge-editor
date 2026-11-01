@@ -6,6 +6,7 @@ import {
   Btn, Icon, IconBtn, Empty, Markdown, Seg, CopyBtn, toast, attempt, useMenu, ago, useNow, money, tokens, shortPath, useDebounced, useLocal, modelLabel,
 } from '../ui.js';
 import { navigate } from '../router.js';
+import { expectSession } from './terminals.js';
 
 let cache = null; // last list, so coming back to the view is instant
 
@@ -50,7 +51,7 @@ function download(name, text) {
 }
 
 // ---------- reader ----------
-function ToolEntry({ e }) {
+export function ToolEntry({ e }) {
   const [open, setOpen] = useState(false);
   return html`<div class="t-entry tool">
     <div class="who">${'herram.'}</div>
@@ -84,12 +85,12 @@ function Reader({ conv }) {
   const visible = entries.slice(-shown);
   const md = () => toMarkdown(conv, data ? data.entries : []);
   const resume = async (where) => {
-    if (live) { navigate(live.terminalId ? '/terminals/' + live.terminalId : '/sessions/' + live.id); return; }
+    if (live) { navigate(live.terminalId ? '/terminals/' + live.terminalId : '/terminals/s.' + live.id); return; }
     const r = conv.source === 'antigravity'
       ? await attempt(() => api.post('/api/agy/sessions', { conversationId: conv.id, cwd: conv.cwd, name: conv.title.slice(0, 40) }))
       : await attempt(() => api.post('/api/sessions', { resumeId: conv.id, configDir: conv.configDir, cwd: conv.cwd, name: conv.title.slice(0, 40), where }));
     if (r && r.terminal) navigate('/terminals/' + r.terminal.id);
-    else if (r) toast('Sesión retomada en Windows Terminal');
+    else if (r && r.sessionId) { expectSession(r.sessionId, conv.title.slice(0, 40), where); navigate('/terminals/s.' + r.sessionId); toast(where === 'gitbash' ? 'Retomando en Git Bash en tu PC' : 'Retomando en Windows Terminal'); }
   };
   const toVault = () => attempt(() => api.post('/api/vault', { title: 'Conversación: ' + conv.title.slice(0, 80), text: md().slice(0, 60000), tags: ['historial'].concat(conv.project ? [conv.project] : []) }), 'Guardada en el Baúl');
 
@@ -109,6 +110,7 @@ function Reader({ conv }) {
         <div class="row" style="flex:none">
           <${Btn} kind="primary" icon="play" onClick=${() => resume('pty')}>${live ? 'Ir a la sesión' : 'Retomar'}<//>
           <${IconBtn} icon="more" title="Más" onClick=${(e) => openMenu(e, [
+            conv.source === 'claude' && !live ? { label: 'Retomar en Git Bash', icon: 'git', run: () => resume('gitbash') } : null,
             conv.source === 'claude' && !live ? { label: 'Retomar en Windows Terminal', icon: 'external', run: () => resume('external') } : null,
             { label: 'Copiar como Markdown', icon: 'copy', run: () => navigator.clipboard.writeText(md()).then(() => toast('Conversación copiada')) },
             { label: 'Descargar .md', icon: 'download', run: () => download(conv.title, md()) },
